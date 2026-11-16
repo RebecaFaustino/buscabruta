@@ -13,6 +13,18 @@ export async function mediaURL(mediaId) {
   return urlCache.get(mediaId);
 }
 
+// Safari/iOS só decodifica quadros de vídeos presentes no documento: mantemos um contêiner invisível.
+let shelf;
+function videoShelf() {
+  if (!shelf) {
+    shelf = document.createElement('div');
+    shelf.setAttribute('aria-hidden', 'true');
+    shelf.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;overflow:hidden;opacity:0.01;pointer-events:none;z-index:-1';
+    document.body.appendChild(shelf);
+  }
+  return shelf;
+}
+
 const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
 const seeked = (v) => new Promise((r) => { const f = () => { v.removeEventListener('seeked', f); r(); }; v.addEventListener('seeked', f); });
 
@@ -37,7 +49,10 @@ export class Player {
       v.preload = 'auto';
       v.playsInline = true;
       v.crossOrigin = 'anonymous';
+      v.setAttribute('playsinline', '');
+      v.style.cssText = 'width:2px;height:2px';
       v.src = await mediaURL(s.mediaId);
+      videoShelf().appendChild(v);
       this.videos.set(s.id, v);
       if (this.ctx) this.wireAudio(v);
       await new Promise((r) => { if (v.readyState >= 2) r(); else { v.addEventListener('loadeddata', r, { once: true }); v.addEventListener('error', r, { once: true }); } });
@@ -74,9 +89,20 @@ export class Player {
   }
 
   // ---------- Áudio (voz limpa: passa-alta, presença e compressor) ----------
+  // Chamado de forma síncrona no toque do usuário: libera a reprodução com som no iOS.
+  unlock() {
+    for (const v of this.videos.values()) {
+      if (v._unlocked) continue;
+      v._unlocked = true;
+      const p = v.play();
+      p?.then(() => { if (v !== this.active) v.pause(); }).catch(() => {});
+    }
+  }
+
   ensureAudio() {
+    this.unlock();
     if (this.ctx) { this.ctx.resume(); return; }
-    const ctx = this.ctx = new AudioContext();
+    const ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     this.master = ctx.createGain();
     this.speaker = ctx.createGain();
     this.dest = ctx.createMediaStreamDestination();
@@ -134,6 +160,7 @@ export class Player {
     let prevV = null;
     while (this.playing && i < clips.length) {
       const c = clips[i], v = this.videos.get(c.srcId);
+      this.active = v;
       const target = c.in + (this.T - this.starts[i]);
       const contiguous = prevV === v && !v.paused && Math.abs(v.currentTime - target) < 0.06;
       if (!contiguous) {

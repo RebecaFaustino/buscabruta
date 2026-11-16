@@ -6,7 +6,11 @@ Eduzz, Sympla, Kiwify, Memberkit e YouTube — com perfil visual próprio para c
 
 Roda 100% no navegador. Vídeos e projetos ficam salvos no próprio computador (IndexedDB); nada é enviado a servidores.
 
-## Como abrir
+## Versão online (celular e computador)
+
+https://claude.ai/artifact/TktWxL7iosS8x65jYTAH69 — abra no navegador do celular e use "Adicionar à Tela de Início".
+
+## Como abrir localmente
 
 ```bash
 cd estudio-cursos

@@ -16,6 +16,12 @@ const lessonDur = (l) => l.clips.reduce((a, c) => a + c.out - c.in, 0);
 const rawDur = (l) => l.sources.reduce((a, s) => a + (s.duration || 0), 0);
 
 const view = $('#view');
+let whisperOK;
+function whisperAvailable() {
+  whisperOK ??= fetch('https://huggingface.co/api/models/Xenova/whisper-base', { method: 'HEAD', mode: 'no-cors', cache: 'no-store' })
+    .then(() => true, () => false);
+  return whisperOK;
+}
 const envs = new Map(); // srcId -> envelope (forma de onda)
 
 export function toast(msg, kind = '') {
@@ -26,22 +32,68 @@ export function toast(msg, kind = '') {
   setTimeout(() => t.remove(), 4200);
 }
 
-function download(blob, name) {
+// Recursos do claude.ai (quando publicado como Artifact). Fora dele, cai no comportamento normal do navegador.
+const cap = (name) => (window.claude?.use ? window.claude.use(name).catch(() => null) : Promise.resolve(null));
+const SAVE_EXT = ['mp4', 'webm', 'mov', 'txt', 'json', 'md', 'csv', 'zip', 'pdf', 'png', 'jpg'];
+
+async function download(blob, name) {
+  let ext = name.split('.').pop().toLowerCase();
+  if (!SAVE_EXT.includes(ext) && window.JSZip) {
+    // .srt/.vtt não são aceitos pelo salvamento do claude.ai: entregamos dentro de um .zip
+    const z = new JSZip();
+    z.file(name, blob);
+    blob = await z.generateAsync({ type: 'blob' });
+    name += '.zip';
+  }
+  const dl = await cap('downloads');
+  if (dl) {
+    try { await dl.save({ filename: name, data: blob }); toast('Arquivo salvo', 'ok'); }
+    catch (e) { if (e?.code !== 'declined') toast('Não foi possível salvar: ' + (e?.message || e?.code), 'err'); }
+    return;
+  }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
+// Confirmação dentro da página (o visualizador do claude.ai não exibe confirm()).
+function ask(msg, okLabel = 'Excluir') {
+  return new Promise((res) => {
+    const d = document.createElement('div');
+    d.className = 'modal';
+    d.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true"><p>${esc(msg)}</p>
+      <div class="btn-row end"><button class="ghost" data-r="0">Cancelar</button><button class="btn danger-btn" data-r="1">${esc(okLabel)}</button></div></div>`;
+    d.onclick = (e) => { const r = e.target.dataset.r; if (r !== undefined || e.target === d) { d.remove(); res(r === '1'); } };
+    document.body.appendChild(d);
+    d.querySelector('[data-r="1"]').focus();
+  });
+}
+
 // ======================= Navegação =======================
-function go(hash) { location.hash = hash; }
-window.addEventListener('hashchange', route);
+let cur = '#/';
+try { cur = localStorage.getItem('ec-route') || '#/'; } catch {}
+function go(hash) {
+  cur = hash;
+  try { localStorage.setItem('ec-route', hash); } catch {}
+  document.body.classList.remove('menu-open');
+  route();
+  window.scrollTo(0, 0);
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[href^="#/"]');
+  if (!a) return;
+  e.preventDefault();
+  go(a.getAttribute('href'));
+});
 
 let editor = null; // estado do editor aberto
 function route() {
   if (editor) { editor.player.stop(); editor.dispose?.(); editor = null; }
-  const [, page, a, b] = location.hash.split('/');
+  const [, page, a, b] = cur.split('/');
   renderSidebar();
   if (page === 'cliente' && getClient(a)) return viewClient(getClient(a));
   if (page === 'curso' && getCourse(a)) return viewCourse(getCourse(a));
@@ -51,7 +103,7 @@ function route() {
 }
 
 function renderSidebar() {
-  const [, page, id] = location.hash.split('/');
+  const [, page, id] = cur.split('/');
   const activeClient = page === 'cliente' ? id : getCourse(id)?.clientId;
   $('#clientList').innerHTML = state.clients.map((c) => `
     <a href="#/cliente/${c.id}" class="${c.id === activeClient ? 'active' : ''}">
@@ -60,6 +112,7 @@ function renderSidebar() {
     </a>`).join('');
 }
 
+$('#menuBtn').onclick = () => document.body.classList.toggle('menu-open');
 $('#newClientBtn').onclick = () => {
   const c = newClient();
   state.clients.push(c);
@@ -182,8 +235,8 @@ function viewClient(c) {
   };
   chipEditor($('#kwChips'), $('#kwForm'), c);
   $('#newCourse').onclick = () => { const k = newCourse(c.id); state.courses.push(k); save(); go('#/curso/' + k.id); };
-  $('#delClient').onclick = () => {
-    if (!confirm(`Excluir ${c.name} e todos os seus cursos?`)) return;
+  $('#delClient').onclick = async () => {
+    if (!(await ask(`Excluir ${c.name} e todos os seus cursos?`))) return;
     state.courses = state.courses.filter((k) => k.clientId !== c.id);
     state.clients = state.clients.filter((x) => x !== c);
     save();
@@ -289,7 +342,7 @@ function viewCourse(course) {
     $('#courseTitle').oninput = (e) => { course.title = e.target.textContent.trim(); save(); };
     $('#courseDesc').oninput = (e) => { course.description = e.target.value; save(); };
     $('#addModule').onclick = () => { course.modules.push(newModule(`Módulo ${course.modules.length + 1}`)); save(); draw(); };
-    $('#delCourse').onclick = () => { if (confirm('Excluir este curso?')) { state.courses = state.courses.filter((k) => k !== course); save(); go('#/cliente/' + c.id); } };
+    $('#delCourse').onclick = async () => { if (await ask('Excluir este curso e todas as aulas?')) { state.courses = state.courses.filter((k) => k !== course); save(); go('#/cliente/' + c.id); } };
     view.querySelectorAll('.module').forEach((sec) => {
       const m = course.modules[+sec.dataset.mi];
       sec.querySelector('[data-mod-title]').oninput = (e) => { m.title = e.target.value; save(); };
@@ -297,17 +350,17 @@ function viewCourse(course) {
         const l = m.lessons[+inp.closest('li').dataset.li];
         inp.oninput = () => { l.title = inp.value; save(); };
       });
-      sec.onclick = (e) => {
+      sec.onclick = async (e) => {
         const act = e.target.dataset.act;
         if (!act) return;
         const mi = +sec.dataset.mi, li = +e.target.closest('li')?.dataset.li;
         const swap = (arr, i, j) => { if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; };
         if (act === 'mup') swap(course.modules, mi, mi - 1);
         if (act === 'mdown') swap(course.modules, mi, mi + 1);
-        if (act === 'mdel' && confirm('Excluir módulo e suas aulas?')) course.modules.splice(mi, 1);
+        if (act === 'mdel' && await ask('Excluir este módulo e suas aulas?')) course.modules.splice(mi, 1);
         if (act === 'lup') swap(m.lessons, li, li - 1);
         if (act === 'ldown') swap(m.lessons, li, li + 1);
-        if (act === 'ldel' && confirm('Excluir aula?')) m.lessons.splice(li, 1);
+        if (act === 'ldel' && await ask('Excluir esta aula?')) m.lessons.splice(li, 1);
         if (act === 'ladd') m.lessons.push(newLesson(`Aula ${m.lessons.length + 1}`));
         save(); draw();
       };
@@ -344,6 +397,8 @@ async function viewEditor(course, lessonId) {
             <span class="sep"></span>
             <button class="tool" data-tool="split" title="Dividir no cursor (S)">✂ Dividir</button>
             <button class="tool" data-tool="delete" title="Excluir clipe (Delete)">Excluir</button>
+            <button class="tool" data-tool="trimIn" title="Cortar o início do clipe até o cursor ([)">⇤ Aparar</button>
+            <button class="tool" data-tool="trimOut" title="Cortar do cursor até o fim do clipe (])">Aparar ⇥</button>
             <button class="tool" data-tool="zoom" title="Zoom do clipe (Z)">Zoom</button>
             <button class="tool" data-tool="left" title="Mover clipe para trás">◀</button>
             <button class="tool" data-tool="right" title="Mover clipe para frente">▶</button>
@@ -415,6 +470,14 @@ async function viewEditor(course, lessonId) {
       ed.snapshot();
       clips.splice(at, 1, { ...c, id: uid('clip'), out: local }, { ...c, id: uid('clip'), in: local });
       ed.sel = at + 1;
+    } else if (t === 'trimIn' || t === 'trimOut') {
+      if (at < 0) return;
+      const c = clips[at], local = c.in + (player.T - player.starts[at]);
+      if (local - c.in < 0.05 || c.out - local < 0.05) return toast('Posicione o cursor dentro do clipe');
+      ed.snapshot();
+      if (t === 'trimIn') { c.in = local; } else { c.out = local; }
+      ed.sel = at;
+      if (t === 'trimIn') player.T = player.starts[at];
     } else if (t === 'delete') {
       if (i < 0) return;
       ed.snapshot();
@@ -455,6 +518,8 @@ async function viewEditor(course, lessonId) {
     else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(); }
     else if (e.key === 'z' || e.key === 'Z') tool('zoom');
     else if (e.key === 'k' || e.key === 'K') tool('card');
+    else if (e.key === '[') tool('trimIn');
+    else if (e.key === ']') tool('trimOut');
     else if (e.key === 'ArrowLeft') player.seek(player.T - (e.shiftKey ? 5 : 1 / 30));
     else if (e.key === 'ArrowRight') player.seek(player.T + (e.shiftKey ? 5 : 1 / 30));
   };
@@ -556,15 +621,15 @@ async function viewEditor(course, lessonId) {
     }
     return null;
   };
-  tl.onmousemove = (e) => {
-    if (drag) return;
+  tl.onpointermove = (e) => {
+    if (drag || e.pointerType !== 'mouse') return;
     const h = e.offsetY > ROW.ruler && e.offsetY < ROW.ruler + ROW.clips ? hit(e.offsetX) : null;
     tl.style.cursor = h?.edge ? 'ew-resize' : 'pointer';
   };
-  tl.onmousedown = (e) => {
+  tl.onpointerdown = (e) => {
     const inClips = e.offsetY > ROW.ruler && e.offsetY < ROW.ruler + ROW.clips;
     const h = inClips ? hit(e.offsetX) : null;
-    if (h?.edge) {
+    if (h?.edge && e.pointerType === 'mouse') {
       ed.snapshot();
       const c = lesson.clips[h.i], src = lesson.sources.find((s) => s.id === c.srcId);
       drag = { ...h, x: e.clientX, in: c.in, out: c.out, max: src?.duration || c.out };
@@ -574,15 +639,22 @@ async function viewEditor(course, lessonId) {
         else c.out = Math.max(c.in + 0.1, Math.min(drag.max, drag.out + dt));
         player.invalidate(); drawTimeline();
       };
-      const up = () => { removeEventListener('mousemove', mv); removeEventListener('mouseup', up); drag = null; ed.changed(); player.seek(player.T); };
-      addEventListener('mousemove', mv); addEventListener('mouseup', up);
+      const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); drag = null; ed.changed(); player.seek(player.T); };
+      addEventListener('pointermove', mv); addEventListener('pointerup', up);
       return;
     }
-    ed.sel = h ? h.i : -1;
-    const wasPlaying = player.playing;
-    player.stop();
-    player.seek(e.offsetX / ed.pps).then(() => wasPlaying && player.play());
-    drawTimeline();
+    // toque: só posiciona se o dedo não arrastou (arrastar rola a linha do tempo)
+    const x0 = e.clientX, sx = scroll.scrollLeft, ox = e.offsetX;
+    const up = (ev) => {
+      tl.removeEventListener('pointerup', up);
+      if (Math.abs(ev.clientX - x0) > 8 || Math.abs(scroll.scrollLeft - sx) > 4) return;
+      ed.sel = h ? h.i : -1;
+      const wasPlaying = player.playing;
+      player.stop();
+      player.seek(ox / ed.pps).then(() => wasPlaying && player.play());
+      drawTimeline();
+    };
+    tl.addEventListener('pointerup', up);
   };
 
   // ---- abas ----
@@ -634,7 +706,7 @@ async function viewEditor(course, lessonId) {
       ed.snapshot(); lesson.clips.push({ id: uid('clip'), srcId: s.id, in: 0, out: s.duration, zoom: 1 }); ed.changed(); renderTab();
     }));
     body.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = async () => {
-      if (!confirm('Remover esta gravação e seus cortes?')) return;
+      if (!(await ask('Remover esta gravação e seus cortes?', 'Remover'))) return;
       const id = b.dataset.rm, s = lesson.sources.find((x) => x.id === id);
       ed.snapshot();
       lesson.sources = lesson.sources.filter((x) => x.id !== id);
@@ -723,16 +795,22 @@ async function viewEditor(course, lessonId) {
   function tabLegendas() {
     const caps = timelineCaptions(lesson);
     body.innerHTML = `
-      <h3>Transcrição automática</h3>
-      <p class="hint">Roda no seu navegador (Whisper). Na primeira vez baixa o modelo (~80–250 MB). O vídeo não é enviado a nenhum servidor.</p>
-      <label>Modelo<select id="model">
-        <option value="onnx-community/whisper-base_timestamped|1">Rápido — palavra a palavra</option>
-        <option value="onnx-community/whisper-small_timestamped|1">Preciso — palavra a palavra (mais lento)</option>
-        <option value="Xenova/whisper-small|0">Preciso — por frase</option>
-      </select></label>
-      <div class="btn-row"><button class="btn" id="transcribe">Transcrever aula</button></div>
-      <div class="progress" id="trProg" hidden><span></span><em></em></div>
-      <h3>Importar / exportar</h3>
+      <div id="autoBox">
+        <h3>Transcrição automática</h3>
+        <p class="hint">Roda no próprio aparelho (Whisper). Na 1ª vez baixa o modelo (~80–250 MB). O vídeo não sai do aparelho.</p>
+        <label>Modelo<select id="model">
+          <option value="onnx-community/whisper-base_timestamped|1">Rápido — palavra a palavra</option>
+          <option value="onnx-community/whisper-small_timestamped|1">Preciso — palavra a palavra (mais lento)</option>
+          <option value="Xenova/whisper-small|0">Preciso — por frase</option>
+        </select></label>
+        <div class="btn-row"><button class="btn" id="transcribe">Transcrever aula</button></div>
+        <div class="progress" id="trProg" hidden><span></span><em></em></div>
+      </div>
+      <h3>Sincronizar roteiro</h3>
+      <p class="hint">Cole o roteiro ou o texto falado (ex.: transcrição do Google Docs, do Word ou do teleprompter). O app distribui o texto pelos trechos de fala detectados.</p>
+      <textarea id="script" rows="4" placeholder="Cole aqui o texto da aula…"></textarea>
+      <div class="btn-row"><button class="ghost" id="syncScript">Sincronizar com a fala</button></div>
+      <h3>Arquivo de legenda</h3>
       <div class="btn-row">
         <label class="ghost file-btn">Importar .srt/.vtt<input type="file" id="srtIn" accept=".srt,.vtt,text/plain" hidden></label>
         <button class="ghost" id="srtOut">Baixar .srt</button>
@@ -740,10 +818,17 @@ async function viewEditor(course, lessonId) {
       </div>
       ${select('captionStyle', 'Estilo na tela', client.captionStyle, CAPTION_STYLES)}
       <h3>Revisão <small class="muted">${caps.length} frases</small></h3>
-      <p class="hint">Corrija termos técnicos aqui. Clique no horário para ir até o trecho.</p>
+      <div class="btn-row" id="aiRow" hidden><button class="ghost" id="aiFix">Revisar termos médicos com IA</button></div>
+      <p class="hint">Corrija termos técnicos aqui. Toque no horário para ir até o trecho.</p>
       <div class="caps" id="capList">${editableCaps()}</div>`;
     bindForm(body, client, () => player.draw());
-    $('#transcribe').onclick = transcribe;
+    whisperAvailable().then((ok) => {
+      if (ok || !$('#autoBox')) return;
+      $('#autoBox').innerHTML = `<h3>Transcrição automática</h3><p class="hint">Nesta versão online a transcrição automática não está disponível (o navegador bloqueia o download do modelo). Use <b>Sincronizar roteiro</b> ou importe um .srt — por exemplo, a legenda automática gerada pelo YouTube, CapCut ou pela própria plataforma.</p>`;
+    });
+    cap('sample').then((smp) => { if (smp && $('#aiRow')) { $('#aiRow').hidden = false; $('#aiFix').onclick = () => aiReview(smp); } });
+    $('#transcribe') && ($('#transcribe').onclick = transcribe);
+    $('#syncScript').onclick = () => syncScript($('#script').value);
     $('#srtIn').onchange = async (e) => {
       const f = e.target.files[0];
       if (!f || !lesson.sources.length) return toast('Importe o vídeo antes da legenda.');
@@ -754,6 +839,71 @@ async function viewEditor(course, lessonId) {
     $('#srtOut').onclick = () => download(new Blob([srt(timelineCaptions(lesson))], { type: 'text/plain' }), slug(lesson.title) + '.srt');
     $('#vttOut').onclick = () => download(new Blob([vtt(timelineCaptions(lesson))], { type: 'text/vtt' }), slug(lesson.title) + '.vtt');
     bindCapEdits();
+  }
+
+  async function syncScript(text) {
+    text = text.replace(/\s+/g, ' ').trim();
+    if (!text) return toast('Cole o texto da aula primeiro.');
+    if (!lesson.sources.length) return toast('Importe o vídeo primeiro.');
+    const segs = [];
+    for (const s of lesson.sources) {
+      const env = await loadEnv(s);
+      const rs = env ? speechRanges(env, { ...client, minSilence: 0.3, padding: 0 }) : [{ in: 0, out: s.duration }];
+      for (const r of rs) segs.push({ src: s.id, ...r });
+    }
+    const total = segs.reduce((a, r) => a + r.out - r.in, 0);
+    const toks = text.split(' ');
+    const weight = toks.reduce((a, w) => a + w.length + 1, 0);
+    const words = Object.fromEntries(lesson.sources.map((s) => [s.id, []]));
+    let pos = 0, k = 0, used = 0;
+    for (const w of toks) {
+      const d = total * (w.length + 1) / weight;
+      while (k < segs.length - 1 && pos - used >= segs[k].out - segs[k].in) { used += segs[k].out - segs[k].in; k++; }
+      const sg = segs[k], st = sg.in + (pos - used);
+      words[sg.src].push({ w, s: st, e: Math.min(sg.out, st + d) });
+      pos += d;
+    }
+    ed.snapshot();
+    Object.assign(lesson.words, words);
+    ed.changed(); renderTab();
+    toast('Roteiro sincronizado. Confira alguns trechos e ajuste se preciso.', 'ok');
+  }
+
+  async function aiReview(smp) {
+    const items = [];
+    for (const s of lesson.sources) phrases(lesson.words[s.id] || []).forEach((p) => items.push({ s, p, text: p.words.map((w) => w.w).join(' ') }));
+    if (!items.length) return toast('Ainda não há legenda para revisar.');
+    const btn = $('#aiFix');
+    btn.disabled = true;
+    ed.snapshot();
+    let changed = 0;
+    try {
+      for (let i = 0; i < items.length; i += 60) {
+        btn.textContent = `Revisando ${Math.min(i + 60, items.length)}/${items.length}…`;
+        const batch = items.slice(i, i + 60);
+        const out = await smp.json(`Você revisa legendas de uma aula em português do Brasil de ${client.name} (${client.specialty || 'medicina'}).
+Corrija apenas grafia de termos médicos, nomes de medicamentos, siglas, acentuação e pontuação. Não reescreva, não resuma, não mude o sentido.
+Palavras-chave do expert: ${client.keywords.join(', ') || 'nenhuma'}.
+Responda somente com um array JSON de ${batch.length} strings, na mesma ordem:
+${JSON.stringify(batch.map((b) => b.text))}`, { modelTier: 'quick' });
+        if (!Array.isArray(out) || out.length !== batch.length) continue;
+        // aplica de trás para frente para não deslocar índices
+        for (let j = batch.length - 1; j >= 0; j--) {
+          const { s, p, text } = batch[j];
+          const nt = String(out[j] || '').trim();
+          if (!nt || nt === text) continue;
+          const all = lesson.words[s.id], start = all.indexOf(p.words[0]);
+          if (start < 0) continue;
+          all.splice(start, p.words.length, ...spread(nt, p.s, p.e));
+          changed++;
+        }
+      }
+      ed.changed(); renderTab();
+      toast(changed ? `${changed} frase(s) corrigida(s)` : 'Nenhuma correção necessária', 'ok');
+    } catch (e) {
+      toast('Revisão indisponível agora: ' + (e?.message || e?.code), 'err');
+      btn.disabled = false; btn.textContent = 'Revisar termos médicos com IA';
+    }
   }
 
   // Lista editável no tempo de origem (frases de cada gravação), mostrando o tempo editado.
@@ -921,12 +1071,26 @@ async function viewEditor(course, lessonId) {
       <div id="rOut">${lesson.render ? renderInfo(lesson.render) : ''}</div>
       <h3>Textos para a plataforma</h3>
       <label>Descrição da aula<textarea id="lesDesc" rows="4" placeholder="Resumo da aula para o player da plataforma">${esc(lesson.description)}</textarea></label>
-      <button class="ghost small" id="autoDesc">Gerar resumo a partir da legenda</button>`;
+      <div class="btn-row"><button class="ghost small" id="autoDesc">Gerar resumo a partir da legenda</button></div>`;
     body.querySelector('[data-k=platform]').onchange = (e) => { ed.platform = e.target.value; renderTab(); };
     $('#lesDesc').oninput = (e) => { lesson.description = e.target.value; save(); };
-    $('#autoDesc').onclick = () => {
+    $('#autoDesc').onclick = async () => {
       const text = timelineCaptions(lesson).map((c) => c.text).join(' ');
       if (!text) return toast('Transcreva a aula primeiro.');
+      const smp = await cap('sample');
+      if (smp) {
+        const btn = $('#autoDesc');
+        btn.disabled = true; btn.textContent = 'Escrevendo…';
+        try {
+          const r = await smp(`Escreva a descrição de uma aula de curso online para a área de membros (Hotmart/Eduzz/Sympla).
+Expert: ${client.name}, ${client.specialty || 'médico(a)'}. Curso: ${course.title}. Aula: ${lesson.title}.
+Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.
+Formato: 1 frase de abertura + 3 tópicos curtos com "•" sobre o que o aluno vai aprender. Máximo 90 palavras. Responda só com o texto.
+Transcrição:
+${text.slice(0, 12000)}`, { modelTier: 'quick' });
+          lesson.description = r.text.trim(); save(); renderTab(); return;
+        } catch (e) { toast('IA indisponível, usando resumo simples.'); }
+      }
       const kws = client.keywords.filter((k) => norm(text).includes(norm(k)));
       lesson.description = `Nesta aula, ${client.name} explica ${kws.length ? 'sobre ' + kws.slice(0, 4).join(', ') : lesson.title.toLowerCase()}.\n\n${text.split(/(?<=[.!?])\s/).slice(0, 3).join(' ')}`;
       save(); renderTab();
@@ -1100,5 +1264,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
 // ======================= Boot =======================
 (async () => {
   await load();
+  try { navigator.storage?.persist?.(); } catch {}
   route();
+  if (state.storageError) toast('Este navegador não permite salvar dados (janela anônima?). O trabalho será perdido ao fechar.', 'err');
 })();

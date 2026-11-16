@@ -6,12 +6,14 @@ export const state = { clients: [], courses: [] };
 
 let saveTimer;
 export function save() {
+  if (state.storageError) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => db.set('state', JSON.parse(JSON.stringify(state))), 250);
+  saveTimer = setTimeout(() => db.set('state', JSON.parse(JSON.stringify(state))).catch((e) => console.warn('Não foi possível salvar', e)), 250);
 }
 
 export async function load() {
-  const s = await db.get('state');
+  let s = null;
+  try { s = await db.get('state'); } catch (e) { console.warn(e); state.storageError = true; }
   if (s) Object.assign(state, s);
   if (!state.clients.length) seed();
 }
