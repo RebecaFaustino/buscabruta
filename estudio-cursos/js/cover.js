@@ -48,7 +48,7 @@ export function drawCover(canvas, frame, cl, { title, module = '', number = '' }
     g.font = `700 ${20 * u}px ${FONTS.inter}`; g.fillStyle = st.accent;
     g.fillText(eyebrow.slice(0, 48), x, y); y += 24 * u;
   }
-  g.fillStyle = st.accent; g.fillRect(x, y, 56 * u, 6 * u); y += 52 * u;
+  g.fillStyle = st.accent; g.fillRect(x, y, 56 * u, 6 * u); y += 6 * u + 26 * u;
   // título
   let size = 68 * u, lines;
   for (; size > 34 * u; size -= 4 * u) {
@@ -56,6 +56,7 @@ export function drawCover(canvas, frame, cl, { title, module = '', number = '' }
     lines = wrap(g, st.card.upper ? title.toUpperCase() : title, boxW, 4);
     if (lines.length <= 3 && lines.every((l) => g.measureText(l).width <= boxW)) break;
   }
+  y += size * 0.78; // linha de base da 1ª linha logo abaixo da barra
   g.fillStyle = st.text;
   g.shadowColor = 'rgba(0,0,0,.35)'; g.shadowBlur = 18 * u * (cl.shadow ?? 0.6);
   for (const l of lines) { g.fillText(l, x, y); y += size * 1.08; }

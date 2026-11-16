@@ -79,9 +79,13 @@ async function render(t) {
     dst.set(src.subarray(0, SR * LOOP));
     const tail = src.subarray(SR * LOOP);
     for (let i = 0; i < tail.length; i++) dst[i] += tail[i];
-    let peak = 0; for (let i = 0; i < dst.length; i++) peak = Math.max(peak, Math.abs(dst[i]));
-    if (peak > 0.98) for (let i = 0; i < dst.length; i++) dst[i] *= 0.98 / peak;
   }
+  // nivela as trilhas: mesma intensidade média (≈ −18 dBFS), sem estourar
+  let sum = 0, peak = 0;
+  for (let c = 0; c < 2; c++) for (const x of out.getChannelData(c)) { sum += x * x; peak = Math.max(peak, Math.abs(x)); }
+  const rms = Math.sqrt(sum / (out.length * 2)) || 1;
+  const k = Math.min(0.125 / rms, 0.98 / (peak || 1));
+  for (let c = 0; c < 2; c++) { const d = out.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= k; }
   return out;
 }
 

@@ -573,7 +573,7 @@ function bindMusic(root, c, onChange) {
     const buf = await buildMusic(c.music);
     if (!buf) { hear.textContent = '▶ Ouvir a trilha'; return toast('Este navegador não consegue tocar a trilha.'); }
     const src = previewCtx.createBufferSource(), g = previewCtx.createGain();
-    src.buffer = buf; g.gain.value = Math.min(1, (c.musicVol ?? 0.35) * 2.2);
+    src.buffer = buf; g.gain.value = Math.min(1, (c.musicVol ?? 0.35) * 1.3);
     src.connect(g).connect(previewCtx.destination); src.start(); src.stop(previewCtx.currentTime + 10);
     musicPrev = src; hear.textContent = '■ Parar';
     src.onended = () => { if (musicPrev === src) { musicPrev = null; hear.textContent = '▶ Ouvir a trilha'; } };
