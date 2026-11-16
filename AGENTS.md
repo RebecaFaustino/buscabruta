@@ -30,5 +30,6 @@ Este arquivo é a fonte única de regras do projeto. O Claude Code lê pelo `CLA
 - Trabalhe em branch própria; não faça merge na `master` sem a Rebeca pedir.
 
 ## Memória compartilhada
+- Memória comum fora do código (Claude e ChatGPT, pelo conector Notion): página do Notion "Memória compartilhada — Claude + ChatGPT".
 - Decisões e o andamento do projeto ficam em `MEMORIA.md`. Leia antes de começar e acrescente uma linha ao terminar algo importante.
 - Assim, se uma das IAs ficar sem limite de uso, a outra continua do mesmo ponto.
