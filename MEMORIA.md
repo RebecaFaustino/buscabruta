@@ -16,3 +16,4 @@ Formato de cada linha: data — quem — o que foi feito ou decidido.
 - 2026-11 — Claude — Contexto unificado: `AGENTS.md` (regras), `MEMORIA.md` (memória), skills em `skills/`, com links em `.claude/skills` e `.agents/skills`.
 - 2026-11 — Claude — Revisão em 3 tamanhos de tela (iPhone SE, iPhone 13, computador): nada vaza da tela; título da aula com rótulo; capítulos sem IA usam as palavras-chave do cliente.
 - 2026-11 — Claude — Criada página no Notion "Memória compartilhada — Claude + ChatGPT" (as duas IAs têm conector Notion).
+- 2026-11 — Rebeca — ChatGPT conectado ao Notion; memória comum ativa.
