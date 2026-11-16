@@ -5,6 +5,7 @@ import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player } from './player.js';
 import { SFX, playSfx } from './sfx.js';
+import { TEMPLATES, PALETTES, CAPTION_MODES, CARD_VARIANTS, resolveStyle } from './styles.js';
 import { renderLesson, extOf, pickMime } from './render.js';
 import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards } from './pipeline.js';
 
@@ -350,6 +351,8 @@ async function viewReady(course, lessonId, fresh = false) {
         <label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros <button class="ghost small" id="rHear" type="button">▶ Ouvir</button></label>
         <div id="rOut"></div>
         <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">Ajustar detalhes</a><a class="ghost btn-ghost" href="#/novo">Editar outro vídeo</a></div>
+        <details class="sec" open><summary>Pedir ajuste ao Claude</summary>${chatHTML()}</details>
+        <details class="sec"><summary>Estilo do vídeo · modelos, cores, legenda e destaques</summary><div id="rStyle" class="style-panel"></div></details>
         ${lesson.description ? `<details><summary>Descrição para a plataforma</summary><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></details>` : ''}
       </section>
     </div>`;
@@ -363,6 +366,11 @@ async function viewReady(course, lessonId, fresh = false) {
   player.onTime(0);
   pb.onclick = () => { if (player.playing) player.stop(); else player.play(); pb.textContent = player.playing ? '❚❚' : '▶'; };
   $('#rPlat').onchange = (e) => { platform = e.target.value; drawOut(); };
+  const restyle = () => { lesson.render = null; save(); player.invalidate(); player.draw(); drawOut(); };
+  const sp = $('#rStyle');
+  sp.innerHTML = stylePanelHTML(client);
+  bindStylePanel(sp, client, player, restyle);
+  bindChat(view, { client, lesson, course, player, refresh: () => { sp.innerHTML = stylePanelHTML(client); bindStylePanel(sp, client, player, restyle); drawOut(); } });
   $('#rSfx').onchange = (e) => { client.sfx = e.target.checked; lesson.render = null; save(); drawOut(); };
   $('#rHear').onclick = (e) => { e.preventDefault(); player.ensureAudio(); playSfx(player.ctx, player.sfxBus, 'whoosh', client.sfxVol ?? 0.5); playSfx(player.ctx, player.sfxBus, 'pop', (client.sfxVol ?? 0.5) * 0.6, 0.18); };
   $('#rCopy') && ($('#rCopy').onclick = () => navigator.clipboard?.writeText(lesson.description).then(() => toast('Descrição copiada', 'ok'), () => toast('Selecione o texto e copie.')));
@@ -435,27 +443,14 @@ function viewClient(c) {
         <form id="kwForm" class="inline"><input id="kwInput" placeholder="Adicionar palavra-chave e Enter"><button>Adicionar</button></form>
       </section>
       <section class="panel">
-        <h2>Padrão de edição</h2>
+        <h2>Estilo do vídeo</h2>
+        <div class="style-panel" id="cStyle"></div>
         <div class="form">
-          ${select('expertSide', 'Posição do expert no vídeo', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}
-          ${range('focusX', 'Centro do rosto (horizontal) para zoom', c.focusX ?? 0.5, 0, 1, 0.01)}
-          ${select('look', 'Look de cor', c.look, Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])))}
-          ${select('captionStyle', 'Estilo de legenda', c.captionStyle, CAPTION_STYLES)}
-          ${select('captionPos', 'Posição da legenda', c.captionPos, { bottom: 'Rodapé', middle: 'Terço inferior' })}
           ${select('platform', 'Plataforma padrão', c.platform, Object.fromEntries(Object.entries(PLATFORMS).map(([k, v]) => [k, v.name])))}
-          <div class="checks">
-            ${check('cleanVoice', 'Voz limpa (EQ + compressor)', c.cleanVoice)}
-            ${check('autoZoom', 'Zoom dinâmico nos cortes', c.autoZoom)}
-            ${check('smoothZoom', 'Zoom suave contínuo', c.smoothZoom)}
-            ${check('openingTitle', 'Abertura com título da aula', c.openingTitle)}
-            ${check('lowerThird', 'Nome + CRM na tela', c.lowerThird)}
-            ${check('watermark', 'Logo no canto', c.watermark)}
-          </div>
           <h3>Cortes secos</h3>
           ${range('silenceDb', 'Limiar de silêncio (dB)', c.silenceDb, -60, -20, 1)}
           ${range('minSilence', 'Pausa mínima para cortar (s)', c.minSilence, 0.15, 1.5, 0.05)}
           ${range('padding', 'Respiro em cada corte (s)', c.padding, 0, 0.3, 0.01)}
-          ${sfxBlock(c)}
         </div>
       </section>
     </div>
@@ -466,8 +461,11 @@ function viewClient(c) {
       <button class="card add-card" id="newCourse">+ Novo curso</button>
     </section>`;
 
-  bindForm(view, c, () => { renderSidebar(); $('h1').textContent = c.name; });
-  bindSfxPreview(view, c);
+  const cStyle = $('#cStyle');
+  cStyle.innerHTML = stylePanelHTML(c);
+  bindStylePanel(cStyle, c, null, () => renderSidebar());
+  bindForm(view.querySelector('.two-col > .panel'), c, () => { renderSidebar(); $('h1').textContent = c.name; });
+  view.querySelectorAll('.two-col > .panel:last-child > .form [data-k]').forEach((el) => el.addEventListener('input', () => { c[el.dataset.k] = el.type === 'range' ? parseFloat(el.value) : el.value; const o = el.parentElement.querySelector('output'); if (o) o.textContent = el.value; save(); }));
   showLogo(c);
   $('#logoInput').onchange = async (e) => {
     const f = e.target.files[0];
@@ -671,7 +669,8 @@ async function viewEditor(course, lessonId) {
             <button data-tab="cortes" class="on">Cortes</button>
             <button data-tab="legendas">Legendas</button>
             <button data-tab="destaques">Destaques</button>
-            <button data-tab="visual">Visual</button>
+            <button data-tab="visual">Estilo</button>
+            <button data-tab="ajuste">Pedir ajuste</button>
             <button data-tab="exportar">Exportar</button>
           </nav>
           <div class="tab-body" id="tabBody"></div>
@@ -924,7 +923,7 @@ async function viewEditor(course, lessonId) {
   const body = $('#tabBody');
   function renderTab() {
     view.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === ed.tab));
-    ({ cortes: tabCortes, legendas: tabLegendas, destaques: tabDestaques, visual: tabVisual, exportar: tabExportar })[ed.tab]();
+    ({ cortes: tabCortes, legendas: tabLegendas, destaques: tabDestaques, visual: tabVisual, ajuste: tabAjuste, exportar: tabExportar })[ed.tab]();
   }
   ed.renderTab = renderTab;
 
@@ -1043,7 +1042,7 @@ async function viewEditor(course, lessonId) {
         <button class="ghost" id="srtOut">Baixar .srt</button>
         <button class="ghost" id="vttOut">Baixar .vtt</button>
       </div>
-      ${select('captionStyle', 'Estilo na tela', client.captionStyle, CAPTION_STYLES)}
+      ${select('captionStyle', 'Modelo de legenda', client.captionStyle || 'auto', CAPTION_MODES)}
       <h3>Revisão <small class="muted">${caps.length} frases</small></h3>
       <div class="btn-row" id="aiRow" hidden><button class="ghost" id="aiFix">Revisar termos médicos com IA</button></div>
       <p class="hint">Corrija termos técnicos aqui. Toque no horário para ir até o trecho.</p>
@@ -1213,23 +1212,15 @@ async function viewEditor(course, lessonId) {
 
   // ----- Aba: Visual -----
   function tabVisual() {
-    body.innerHTML = `
-      <p class="hint">Estas opções pertencem ao perfil de <b>${esc(client.name)}</b> e valem para todas as aulas dele.</p>
-      ${select('expertSide', 'Posição do expert', client.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}
-      ${range('focusX', 'Centro do rosto (zoom/vertical)', client.focusX ?? 0.5, 0, 1, 0.01)}
-      ${select('look', 'Look de cor', client.look, Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])))}
-      ${select('captionPos', 'Posição da legenda', client.captionPos, { bottom: 'Rodapé', middle: 'Terço inferior' })}
-      <div class="row3">${color('primary', 'Principal', client.primary)}${color('accent', 'Destaque', client.accent)}${color('text', 'Texto', client.text)}</div>
-      <div class="checks">
-        ${check('cleanVoice', 'Voz limpa (EQ + compressor)', client.cleanVoice)}
-        ${check('smoothZoom', 'Zoom suave contínuo', client.smoothZoom)}
-        ${check('openingTitle', 'Abertura com título', client.openingTitle)}
-        ${check('lowerThird', 'Nome + CRM', client.lowerThird)}
-        ${check('watermark', 'Logo no canto', client.watermark)}
-      </div>
-      ${sfxBlock(client)}`;
-    bindSfxPreview(body, client, player);
-    bindForm(body, client, (k) => { if (k === 'cleanVoice') player.refreshAudio(); lesson.render = null; player.draw(); drawTimeline(); });
+    body.innerHTML = `<p class="hint">Vale para todas as aulas de <b>${esc(client.name)}</b>.</p><div class="style-panel" id="eStyle"></div>`;
+    const sp = $('#eStyle');
+    sp.innerHTML = stylePanelHTML(client);
+    bindStylePanel(sp, client, player, () => { lesson.render = null; save(); player.invalidate(); player.draw(); drawTimeline(); });
+  }
+
+  function tabAjuste() {
+    body.innerHTML = chatHTML();
+    bindChat(body, { client, lesson, course, player, refresh: () => { ed.changed(); } });
   }
 
   // ----- Aba: Exportar -----
@@ -1324,6 +1315,151 @@ function shade(hex, amt) {
   const n = parseInt(hex.slice(1), 16);
   const f = (c) => Math.round(c + (255 - c) * amt);
   return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+}
+
+
+// ======================= Estilo do vídeo (modelos, paleta, sombras, legenda, destaques) =======================
+function stylePanelHTML(c) {
+  const st = resolveStyle(c);
+  return `
+    <h3>Modelo de vídeo</h3>
+    <div class="tpl-grid">${Object.entries(TEMPLATES).map(([k, t]) => `
+      <button class="tpl ${k === (c.template || 'clinico') ? 'on' : ''}" data-tpl="${k}" type="button">
+        <canvas width="320" height="180" data-thumb="${k}"></canvas>
+        <b>${esc(t.name)}</b><small>${esc(t.ref)}</small>
+      </button>`).join('')}</div>
+    <h3>Paleta de cores</h3>
+    <div class="swatches">${PALETTES.map((p, i) => `
+      <button class="sw ${p.primary === st.primary && p.accent === st.accent ? 'on' : ''}" data-pal="${i}" type="button" title="${esc(p.name)}">
+        <span style="background:${p.primary}"></span><span style="background:${p.accent}"></span><small>${esc(p.name)}</small>
+      </button>`).join('')}</div>
+    <div class="row3">${color('primary', 'Principal', st.primary)}${color('accent', 'Destaque', st.accent)}${color('text', 'Texto', st.text)}</div>
+    ${range('shadow', 'Sombras', c.shadow ?? 0.6, 0, 1.5, 0.05)}
+    <h3>Legenda</h3>
+    ${select('captionStyle', 'Modelo de legenda', c.captionStyle || 'auto', CAPTION_MODES)}
+    ${range('captionScale', 'Tamanho da legenda', c.captionScale || 1, 0.7, 1.6, 0.05)}
+    ${select('captionPos', 'Posição', c.captionPos || 'bottom', { bottom: 'Rodapé', middle: 'Terço inferior' })}
+    <h3>Destaques</h3>
+    ${select('cardVariant', 'Modelo de destaque', c.cardVariant || 'auto', CARD_VARIANTS)}
+    <label>Etiqueta acima do destaque<input data-k="cardEyebrow" value="${esc(c.cardEyebrow ?? st.card.eyebrow ?? '')}" placeholder="Ex.: PONTO-CHAVE (vazio = sem etiqueta)"></label>
+    ${select('expertSide', 'Posição do expert', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}
+    <h3>Imagem</h3>
+    ${select('look', 'Cor da imagem', c.look || 'auto', { auto: 'Do modelo', ...Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])) })}
+    ${range('focusX', 'Centro do rosto (zoom e vertical)', c.focusX ?? 0.5, 0, 1, 0.01)}
+    <div class="checks">
+      ${check('cleanVoice', 'Voz limpa', c.cleanVoice)}
+      ${check('autoZoom', 'Zoom nos cortes', c.autoZoom)}
+      ${check('smoothZoom', 'Zoom suave contínuo', c.smoothZoom)}
+      ${check('openingTitle', 'Abertura com título', c.openingTitle)}
+      ${check('lowerThird', 'Nome + CRM', c.lowerThird)}
+      ${check('watermark', 'Logo no canto', c.watermark)}
+    </div>
+    ${sfxBlock(c)}`;
+}
+
+function bindStylePanel(root, c, player, onChange) {
+  const changed = () => { onChange?.(); drawThumbs(root, c, player); };
+  root.querySelectorAll('[data-tpl]').forEach((b) => (b.onclick = () => {
+    const t = TEMPLATES[b.dataset.tpl];
+    Object.assign(c, { template: b.dataset.tpl, ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1 });
+    save();
+    root.innerHTML = stylePanelHTML(c);
+    bindStylePanel(root, c, player, onChange);
+    onChange?.();
+    toast(`Modelo “${t.name}” aplicado`, 'ok');
+  }));
+  root.querySelectorAll('[data-pal]').forEach((b) => (b.onclick = () => {
+    const p = PALETTES[+b.dataset.pal];
+    Object.assign(c, { primary: p.primary, accent: p.accent, text: p.text });
+    save();
+    root.querySelectorAll('[data-pal]').forEach((x) => x.classList.toggle('on', x === b));
+    root.querySelector('[data-k=primary]').value = p.primary;
+    root.querySelector('[data-k=accent]').value = p.accent;
+    root.querySelector('[data-k=text]').value = p.text;
+    changed();
+  }));
+  bindForm(root, c, (k) => { if (k === 'cleanVoice') player?.refreshAudio(); if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
+  bindSfxPreview(root, c, player);
+  drawThumbs(root, c, player);
+}
+
+function drawThumbs(root, c, player) {
+  if (!player?.lesson?.clips.length) return;
+  root.querySelectorAll('[data-thumb]').forEach((cv) => {
+    const t = TEMPLATES[cv.dataset.thumb];
+    player.drawSample(cv, { template: cv.dataset.thumb, ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1, openingTitle: false });
+  });
+}
+
+// ======================= Chat "Pedir ajuste" (Claude edita por você) =======================
+function chatHTML() {
+  return `
+    <div class="chat">
+      <div class="chat-log" id="chatLog"><p class="bot">Peça qualquer ajuste em português. Exemplos: “deixa no estilo cinema”, “legenda maior e amarela”, “destaca a palavra glicemia”, “corte mais rápido”, “troca ‘insulir’ por ‘insulina’ na legenda”.</p></div>
+      <form class="chat-in" id="chatForm"><input id="chatText" placeholder="Escreva o ajuste…" autocomplete="off"><button class="btn" type="submit">Enviar</button></form>
+    </div>`;
+}
+
+function bindChat(root, { client, lesson, course, player, refresh }) {
+  const log = root.querySelector('#chatLog'), form = root.querySelector('#chatForm'), inp = root.querySelector('#chatText');
+  const add = (cls, text) => { const p = document.createElement('p'); p.className = cls; p.textContent = text; log.appendChild(p); log.scrollTop = log.scrollHeight; return p; };
+  const history = [];
+  const applied = [];
+  const touch = (msg) => { lesson.render = null; save(); player.invalidate(); player.draw(); applied.push(msg); return msg; };
+  const tools = [
+    { name: 'ver_estado', description: 'Retorna as configurações atuais do vídeo, os modelos e paletas disponíveis e um trecho da legenda.',
+      execute: () => ({ modelo: client.template, cores: { principal: client.primary, destaque: client.accent, texto: client.text }, legenda: { modelo: client.captionStyle, tamanho: client.captionScale || 1, posicao: client.captionPos }, destaque: { modelo: client.cardVariant, etiqueta: client.cardEyebrow }, palavras_chave: client.keywords, efeitos_sonoros: client.sfx, volume_efeitos: client.sfxVol, sombra: client.shadow ?? 0.6, cor_imagem: client.look, modelos: Object.fromEntries(Object.entries(TEMPLATES).map(([k, t]) => [k, t.name + ' — ' + t.ref])), modelos_legenda: CAPTION_MODES, modelos_destaque: CARD_VARIANTS, cores_imagem: Object.keys(LOOKS), paletas: PALETTES.map((p) => p.name), duracao: Math.round(player.duration), legenda: timelineCaptions(lesson).slice(0, 40).map((c) => c.text).join(' / ') }) },
+    { name: 'definir_modelo', description: 'Aplica um modelo de vídeo completo (fontes, cores, legenda, destaques, moldura).',
+      inputSchema: { type: 'object', properties: { modelo: { type: 'string', enum: Object.keys(TEMPLATES) } }, required: ['modelo'] },
+      execute: ({ modelo }) => { const t = TEMPLATES[String(modelo)]; if (!t) throw new Error('modelo inexistente'); Object.assign(client, { template: String(modelo), ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1 }); return touch(`Modelo: ${t.name}`); } },
+    { name: 'definir_cores', description: 'Muda as cores (hexadecimal #RRGGBB). Use também para aplicar uma das paletas pelo nome.',
+      inputSchema: { type: 'object', properties: { principal: { type: 'string' }, destaque: { type: 'string' }, texto: { type: 'string' }, paleta: { type: 'string' } } },
+      execute: (i) => { const p = PALETTES.find((x) => norm(x.name) === norm(String(i.paleta || ''))); if (p) Object.assign(client, { primary: p.primary, accent: p.accent, text: p.text }); const ok = (h) => /^#[0-9a-f]{6}$/i.test(String(h || '')); if (ok(i.principal)) client.primary = i.principal; if (ok(i.destaque)) client.accent = i.destaque; if (ok(i.texto)) client.text = i.texto; return touch('Cores atualizadas'); } },
+    { name: 'definir_legenda', description: 'Ajusta a legenda: modelo, tamanho (0.7 a 1.6, 1 = padrão) e posição.',
+      inputSchema: { type: 'object', properties: { modelo: { type: 'string', enum: Object.keys(CAPTION_MODES) }, tamanho: { type: 'number' }, posicao: { type: 'string', enum: ['bottom', 'middle'] } } },
+      execute: (i) => { if (CAPTION_MODES[i.modelo]) client.captionStyle = i.modelo; if (i.tamanho) client.captionScale = Math.min(1.6, Math.max(0.7, Number(i.tamanho))); if (i.posicao) client.captionPos = i.posicao; return touch('Legenda ajustada'); } },
+    { name: 'definir_destaques', description: 'Ajusta os cartões de destaque: modelo visual, etiqueta acima (texto curto em maiúsculas ou vazio) e lado.',
+      inputSchema: { type: 'object', properties: { modelo: { type: 'string', enum: Object.keys(CARD_VARIANTS) }, etiqueta: { type: 'string' }, lado_do_expert: { type: 'string', enum: ['left', 'right'] } } },
+      execute: (i) => { if (CARD_VARIANTS[i.modelo]) client.cardVariant = i.modelo; if (i.etiqueta !== undefined) client.cardEyebrow = String(i.etiqueta); if (i.lado_do_expert) client.expertSide = i.lado_do_expert; return touch('Destaques ajustados'); } },
+    { name: 'palavras_chave', description: 'Adiciona e/ou remove palavras-chave e recria os destaques da aula.',
+      inputSchema: { type: 'object', properties: { adicionar: { type: 'array', items: { type: 'string' } }, remover: { type: 'array', items: { type: 'string' } } } },
+      execute: (i) => { for (const w of i.adicionar || []) if (!client.keywords.some((k) => norm(k) === norm(w))) client.keywords.push(String(w)); const rm = (i.remover || []).map(norm); client.keywords = client.keywords.filter((k) => !rm.includes(norm(k))); const n = keywordsAndCards(lesson, client); return touch(`${n} destaques · palavras: ${client.keywords.join(', ')}`); } },
+    { name: 'corrigir_legenda', description: 'Troca uma palavra ou trecho errado da legenda por outro, em toda a aula.',
+      inputSchema: { type: 'object', properties: { de: { type: 'string' }, para: { type: 'string' } }, required: ['de', 'para'] },
+      execute: ({ de, para }) => { let n = 0; const re = new RegExp(String(de).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); for (const [id, ws] of Object.entries(lesson.words)) { const ps = phrases(ws); for (let j = ps.length - 1; j >= 0; j--) { const p = ps[j], t = p.words.map((w) => w.w).join(' '); if (!re.test(t)) continue; re.lastIndex = 0; const all = lesson.words[id], st = all.indexOf(p.words[0]); all.splice(st, p.words.length, ...spread(t.replace(re, String(para)), p.s, p.e)); n++; } } return touch(`${n} trecho(s) corrigido(s)`); } },
+    { name: 'ajustar_cortes', description: 'Refaz os cortes secos. ritmo: "rapido" (pausas curtas), "dinamico" (padrão) ou "natural" (mantém respiros).',
+      inputSchema: { type: 'object', properties: { ritmo: { type: 'string', enum: ['rapido', 'dinamico', 'natural'] } }, required: ['ritmo'] },
+      execute: async ({ ritmo }) => { Object.assign(client, { rapido: { minSilence: 0.3, padding: 0.05 }, dinamico: { minSilence: 0.45, padding: 0.08 }, natural: { minSilence: 0.7, padding: 0.15 } }[ritmo] || {}); const removed = await autoCutLesson(lesson, client); player.invalidate(); await player.seek(0); return touch(`${lesson.clips.length} cortes · ${fmtLong(removed)} removidos`); } },
+    { name: 'definir_extras', description: 'Liga/desliga e ajusta: efeitos sonoros e volume (0-1), sombra (0-1.5), cor da imagem, zoom nos cortes, abertura, nome+CRM, logo.',
+      inputSchema: { type: 'object', properties: { efeitos_sonoros: { type: 'boolean' }, volume_efeitos: { type: 'number' }, sombra: { type: 'number' }, cor_imagem: { type: 'string', enum: ['auto', ...Object.keys(LOOKS)] }, zoom_nos_cortes: { type: 'boolean' }, abertura: { type: 'boolean' }, nome_na_tela: { type: 'boolean' }, logo: { type: 'boolean' } } },
+      execute: (i) => { const m = { efeitos_sonoros: 'sfx', volume_efeitos: 'sfxVol', sombra: 'shadow', cor_imagem: 'look', abertura: 'openingTitle', nome_na_tela: 'lowerThird', logo: 'watermark' }; for (const [k, v] of Object.entries(i)) if (m[k] !== undefined && v !== undefined) client[m[k]] = v; if (i.zoom_nos_cortes !== undefined) { client.autoZoom = !!i.zoom_nos_cortes; lesson.clips.forEach((c, j) => (c.zoom = client.autoZoom && j % 2 ? 1.15 : 1)); } return touch('Ajustes aplicados'); } },
+  ];
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = '';
+    add('me', text);
+    const smp = await cap('sample');
+    if (!smp) { add('bot', 'O assistente funciona com o app aberto no claude.ai (no app do Claude ou no navegador, logada). Aqui, use o painel de estilo acima.'); return; }
+    const bubble = add('bot', 'Pensando…');
+    applied.length = 0;
+    history.push({ role: 'user', content: text });
+    const sys = `Você é o assistente de edição do Estúdio de Cursos. Fale português do Brasil, curto e simpático. A usuária edita aulas de ${client.name} (${client.specialty || 'saúde'}), aula "${lesson.title}".
+Use as ferramentas para aplicar os ajustes pedidos (consulte ver_estado quando precisar). Depois responda em 1-2 frases dizendo o que mudou. Se algo não for possível pelas ferramentas, diga com clareza.`;
+    try {
+      const r = await smp([{ role: 'user', content: sys }, { role: 'assistant', content: 'Entendido.' }, ...history], {
+        tools, cache: false, modelTier: 'default',
+        onText: ({ text: t }) => { bubble.textContent = t || 'Aplicando…'; },
+      });
+      bubble.textContent = r.text || (applied.length ? applied.join(' · ') : 'Feito.');
+      history.push({ role: 'assistant', content: bubble.textContent });
+      if (applied.length) { refresh?.(); }
+    } catch (err) {
+      bubble.textContent = err?.code === 'not_granted' ? 'Você precisa permitir que a página use o Claude (aparece um aviso na primeira vez).' : 'Não consegui agora: ' + (err?.message || err?.code);
+      history.pop();
+    }
+  };
 }
 
 // ======================= Central de exportação =======================
@@ -1471,5 +1607,8 @@ window.addEventListener('beforeunload', (e) => {
   await load();
   try { navigator.storage?.persist?.(); } catch {}
   route();
+  // fontes dos modelos (Inter Tight, JetBrains Mono, Playfair, Anton): redesenha quando chegarem
+  Promise.all(['Inter Tight', 'JetBrains Mono', 'Playfair Display', 'Anton', 'Inter'].map((f) => document.fonts.load(`700 40px "${f}"`).catch(() => {})))
+    .then(() => { try { editor?.player?.draw(); document.querySelectorAll('.style-panel').forEach((el) => el.dispatchEvent(new Event('fonts'))); } catch {} });
   if (state.storageError) toast('Este navegador não permite salvar dados (janela anônima?). O trabalho será perdido ao fechar.', 'err');
 })();

@@ -2,6 +2,7 @@
 import { db } from './db.js';
 import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
+import { resolveStyle, FONTS } from './styles.js';
 import { playSfx } from './sfx.js';
 
 const urlCache = new Map(); // mediaId -> objectURL
@@ -43,6 +44,14 @@ const seeked = (v) => new Promise((r) => { const f = () => { v.removeEventListen
 export class Player {
   constructor(canvas) {
     this.canvas = canvas;
+    // Na tela, o canvas fica dentro de uma "moldura" com o <video> real por baixo (prévia confiável no iPhone).
+    if (canvas.isConnected) {
+      const host = document.createElement('div');
+      host.className = 'screen';
+      canvas.replaceWith(host);
+      host.appendChild(canvas);
+      this.host = host;
+    }
     this.videos = new Map(); // srcId -> video
     this.T = 0;
     this.playing = false;
@@ -62,12 +71,13 @@ export class Player {
       v.playsInline = true;
       v.crossOrigin = 'anonymous';
       v.setAttribute('playsinline', '');
-      v.style.cssText = 'width:2px;height:2px';
       v.src = await mediaURL(s.mediaId);
-      videoShelf().appendChild(v);
+      if (this.host) { v.className = 'live'; v.style.visibility = 'hidden'; this.host.insertBefore(v, this.canvas); }
+      else { v.style.cssText = 'width:2px;height:2px'; videoShelf().appendChild(v); }
       this.videos.set(s.id, v);
       if (this.ctx) this.wireAudio(v);
-      await new Promise((r) => { if (v.readyState >= 2) r(); else { v.addEventListener('loadeddata', r, { once: true }); v.addEventListener('error', r, { once: true }); } });
+      // no iPhone o vídeo só carrega depois de um toque: não espera mais que 2,5 s
+      await new Promise((r) => { if (v.readyState >= 2) r(); else { v.addEventListener('loadeddata', r, { once: true }); v.addEventListener('error', r, { once: true }); setTimeout(r, 2500); } });
     }
     this.logo = null;
     if (client.logoMediaId) {
@@ -218,193 +228,425 @@ export class Player {
   }
 
   // ---------- Composição ----------
-  draw(canvas = this.canvas) {
+  // Prévia ao vivo: o próprio <video> fica na tela (funciona no iPhone) e o canvas transparente desenha os grafismos por cima.
+  liveVideo(c, local, st) {
+    const cl = this.client || {};
+    for (const [id, v] of this.videos) {
+      const on = id === c.srcId;
+      if (v._on !== on) { v.style.visibility = on ? 'visible' : 'hidden'; v._on = on; }
+    }
+    const v = this.videos.get(c.srcId);
+    if (!v) return;
+    let zoom = c.zoom || 1;
+    if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
+    const fx = cl.focusX ?? 0.5;
+    const tf = `scale(${zoom.toFixed(4)})`, org = `${(fx * 100).toFixed(1)}% 38%`;
+    if (v._tf !== tf) { v.style.transform = tf; v._tf = tf; }
+    if (v._org !== org) { v.style.transformOrigin = org; v._org = org; }
+    const flt = lookFilter(cl, st);
+    if (v._flt !== flt) { v.style.filter = flt; v._flt = flt; }
+  }
+
+  // Miniatura de um modelo: quadro atual + legenda e destaque de exemplo.
+  drawSample(canvas, override) {
+    const keep = { caps: this.caps, cardsT: this.cardsT };
+    const T = this.T;
+    const word = (this.client?.keywords || [])[0] || 'destaque';
+    const words = ['Exemplo', 'de', 'legenda', 'com', word].map((w, i) => ({ w, s: T - 0.4 + i * 0.25, e: T - 0.15 + i * 0.25 }));
+    this.caps = [{ s: T - 0.5, e: T + 2, text: '', words }];
+    this.cardsT = [{ T: T - 1, dur: 4, text: word, sub: '' }];
+    try { this.draw(canvas, override); } finally { Object.assign(this, keep); }
+  }
+
+  draw(canvas = this.canvas, styleOverride) {
     const g = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
-    const cl = this.client || {};
+    const cl = styleOverride ? { ...this.client, ...styleOverride } : (this.client || {});
+    const st = resolveStyle(cl);
+    const live = canvas === this.canvas && this.host && !this.frame && !styleOverride;
     g.save();
-    g.fillStyle = '#0d1414';
-    g.fillRect(0, 0, W, H);
+    if (live) g.clearRect(0, 0, W, H);
+    else { g.fillStyle = '#0d1414'; g.fillRect(0, 0, W, H); }
     if (!this.lesson?.clips.length) {
-      g.fillStyle = '#7d8b8b'; g.font = `500 ${H * 0.035}px Inter, sans-serif`; g.textAlign = 'center';
+      if (live) { g.fillStyle = '#0d1414'; g.fillRect(0, 0, W, H); }
+      g.fillStyle = '#7d8b8b'; g.font = `500 ${H * 0.035}px ${FONTS.inter}`; g.textAlign = 'center';
       g.fillText('Importe um vídeo para começar', W / 2, H / 2);
       g.restore();
       return;
     }
     const T = this.T;
     const i = this.clipAt(T), c = this.lesson.clips[i];
-    // na exportação quadro a quadro, o quadro vem decodificado (this.frame) em vez do <video>
-    const fr = this.frame;
-    const v = fr ? null : this.videos.get(c.srcId);
-    const img = fr ? fr.img : v;
     const local = (T - this.starts[i]) / Math.max(0.001, c.out - c.in);
-    if (img && (fr ? fr.w : v.videoWidth)) {
-      let zoom = c.zoom || 1;
-      if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
-      const vw = fr ? fr.w : v.videoWidth, vh = fr ? fr.h : v.videoHeight;
-      const s = Math.max(W / vw, H / vh) * zoom;
-      const dw = vw * s, dh = vh * s;
-      const fx = cl.focusX ?? 0.5, fy = 0.38;
-      const vertical = W / H < 0.8 && vw / vh > 1;
-      const tx = vertical ? 0.5 : fx;
-      let dx = W * tx - fx * dw, dy = H * fy - fy * dh;
-      dx = Math.min(0, Math.max(W - dw, dx)); dy = Math.min(0, Math.max(H - dh, dy));
-      g.filter = LOOKS[cl.look]?.filter || 'none';
-      g.drawImage(img, dx, dy, dw, dh);
-      g.filter = 'none';
+    if (live) this.liveVideo(c, local, st);
+    else {
+      // na exportação quadro a quadro, o quadro vem decodificado (this.frame) em vez do <video>
+      const fr = this.frame;
+      const v = fr ? null : this.videos.get(c.srcId);
+      const img = fr ? fr.img : v;
+      const vw = fr ? fr.w : v?.videoWidth, vh = fr ? fr.h : v?.videoHeight;
+      if (img && vw) {
+        let zoom = c.zoom || 1;
+        if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
+        const sc = Math.max(W / vw, H / vh) * zoom;
+        const dw = vw * sc, dh = vh * sc;
+        const fx = cl.focusX ?? 0.5, fy = 0.38;
+        const vertical = W / H < 0.8 && vw / vh > 1;
+        const tx = vertical ? 0.5 : fx;
+        let dx = W * tx - fx * dw, dy = H * fy - fy * dh;
+        dx = Math.min(0, Math.max(W - dw, dx)); dy = Math.min(0, Math.max(H - dh, dy));
+        try {
+          g.filter = lookFilter(cl, st);
+          g.drawImage(img, dx, dy, dw, dh);
+        } catch (e) { /* quadro indisponível neste instante */ }
+        g.filter = 'none';
+      }
     }
-    const u = H / 1080; // unidade relativa
-    const side = cl.expertSide === 'right' ? 'left' : 'right'; // lado das palavras-chave
+    const u = H / 1080;
+    const side = cl.expertSide === 'right' ? 'left' : 'right'; // lado dos destaques
+    drawFrameFx(g, W, H, u, st, T);
 
-    // Nome + CRM (lower third) do lado do expert
+    // Nome + CRM do lado do expert
     if (cl.lowerThird && T > 3.4 && T < 9) {
       const a = Math.min(ease((T - 3.4) / 0.5), 1 - ease((T - 8.4) / 0.6));
-      const x0 = cl.expertSide === 'right' ? W - 80 * u : 80 * u;
-      const al = cl.expertSide === 'right' ? 'right' : 'left';
-      const y0 = H * 0.66;
-      g.globalAlpha = a;
-      g.textAlign = al; g.textBaseline = 'alphabetic';
-      g.font = `600 ${44 * u}px Inter, sans-serif`;
-      const w1 = g.measureText(cl.name).width;
-      g.font = `400 ${26 * u}px Inter, sans-serif`;
-      const sub = [cl.specialty, cl.crm].filter(Boolean).join('  ·  ');
-      const w = Math.max(w1, g.measureText(sub).width) + 56 * u;
-      const off = (1 - a) * 30 * u * (al === 'left' ? -1 : 1);
-      const bx = (al === 'left' ? x0 - 28 * u : x0 - w + 28 * u) + off;
-      roundRect(g, bx, y0 - 60 * u, w, 110 * u, 14 * u, 'rgba(255,255,255,0.94)');
-      g.fillStyle = cl.accent;
-      g.fillRect(al === 'left' ? bx : bx + w - 6 * u, y0 - 60 * u, 6 * u, 110 * u);
-      g.fillStyle = cl.primary;
-      g.font = `600 ${44 * u}px Inter, sans-serif`;
-      g.fillText(cl.name, x0 + off, y0);
-      g.fillStyle = '#5b6b6b';
-      g.font = `400 ${26 * u}px Inter, sans-serif`;
-      g.fillText(sub, x0 + off, y0 + 36 * u);
-      g.globalAlpha = 1;
+      drawLower(g, a, cl, st, W, H, u);
     }
-
-    // Cartões de palavra-chave ao lado do expert
-    for (const k of this.cardsT) {
+    for (const k of this.cardsT || []) {
       const dt = T - k.T;
       if (dt < 0 || dt > k.dur) continue;
       const a = Math.min(ease(dt / 0.35), 1 - ease((dt - k.dur + 0.3) / 0.3));
-      drawCard(g, k, a, side, W, H, u, cl);
+      drawCard(g, k, a, side, W, H, u, st);
     }
-
-    // Legendas
-    if (cl.captionStyle !== 'nenhuma') drawCaptions(g, this.caps, T, W, H, u, cl);
-
-    // Marca d'água / logo
+    if (st.caption.mode !== 'nenhuma') drawCaptions(g, this.caps, T, W, H, u, st, cl);
     if (cl.watermark && this.logo) {
       const lh = 64 * u, lw = lh * (this.logo.naturalWidth / this.logo.naturalHeight || 1);
       g.globalAlpha = 0.85;
-      g.drawImage(this.logo, side === 'right' ? W - lw - 48 * u : 48 * u, 44 * u, lw, lh);
+      g.drawImage(this.logo, side === 'right' ? W - lw - 48 * u : 48 * u, 44 * u + st.frame.letterbox * H, lw, lh);
       g.globalAlpha = 1;
     }
-    // Abertura com título da aula
     if (cl.openingTitle && T < 3.2) {
       const a = Math.min(ease(T / 0.4), 1 - ease((T - 2.6) / 0.6));
-      g.globalAlpha = a * 0.92;
-      g.fillStyle = cl.primary;
-      g.fillRect(0, 0, W, H);
-      g.globalAlpha = a;
-      g.fillStyle = cl.accent;
-      g.fillRect(W / 2 - 40 * u, H / 2 - 92 * u, 80 * u, 5 * u);
-      g.fillStyle = cl.text || '#fff';
-      g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.font = `400 ${26 * u}px Inter, sans-serif`;
-      g.fillText((this.meta?.module || '').toUpperCase(), W / 2, H / 2 - 50 * u);
-      fitText(g, this.lesson.title, W * 0.8, 600, 66 * u);
-      g.fillText(this.lesson.title, W / 2, H / 2 + 20 * u);
-      g.font = `400 ${26 * u}px Inter, sans-serif`;
-      g.globalAlpha = a * 0.8;
-      g.fillText(cl.name || '', W / 2, H / 2 + 90 * u);
-      g.globalAlpha = 1;
+      drawOpening(g, a, T, this.lesson.title, this.meta?.module || '', cl, st, W, H, u);
     }
-
     g.restore();
   }
 }
 
-function fitText(g, text, maxW, weight, size) {
+// ---------------------------------------------------------------- utilitários de desenho
+function lookFilter(cl, st) {
+  if (cl.look && cl.look !== 'auto' && LOOKS[cl.look]) return LOOKS[cl.look].filter;
+  return st.look || 'none';
+}
+
+const hasLS = typeof CanvasRenderingContext2D !== 'undefined' && 'letterSpacing' in CanvasRenderingContext2D.prototype;
+function setFont(g, st, part, size, weight) {
+  const f = FONTS[part.font] || FONTS.inter;
+  g.font = `${weight ?? part.weight ?? 600} ${Math.round(size)}px ${f}`;
+  if (hasLS) g.letterSpacing = `${((part.tracking || 0) * size).toFixed(1)}px`;
+}
+function resetLS(g) { if (hasLS) g.letterSpacing = '0px'; }
+
+function fitText(g, text, maxW, weight, size, family = FONTS.inter) {
   let s = size;
-  do { g.font = `${weight} ${s}px Inter, sans-serif`; s -= 2; } while (g.measureText(text).width > maxW && s > 12);
+  do { g.font = `${weight} ${s}px ${family}`; s -= 2; } while (g.measureText(text).width > maxW && s > 12);
+  return s + 2;
 }
 
-function roundRect(g, x, y, w, h, r, fill) {
+function rr(g, x, y, w, h, r) {
   g.beginPath();
-  g.roundRect ? g.roundRect(x, y, w, h, r) : g.rect(x, y, w, h);
-  g.fillStyle = fill;
-  g.fill();
+  if (g.roundRect) g.roundRect(x, y, w, h, Math.max(0, r)); else g.rect(x, y, w, h);
+}
+function roundRect(g, x, y, w, h, r, fill) { rr(g, x, y, w, h, r); g.fillStyle = fill; g.fill(); }
+
+function shadow(g, st, u, strength = 1) {
+  const k = st.shadow * strength;
+  g.shadowColor = `rgba(0,0,0,${(0.28 * k).toFixed(3)})`;
+  g.shadowBlur = 44 * u * k; g.shadowOffsetY = 14 * u * k;
+}
+function noShadow(g) { g.shadowColor = 'transparent'; g.shadowBlur = 0; g.shadowOffsetY = 0; }
+
+function hexA(hex, a) {
+  const n = parseInt(String(hex).replace('#', ''), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-function drawCard(g, k, a, side, W, H, u, cl) {
-  const text = k.text.toUpperCase();
-  const maxW = W * 0.36;
-  fitText(g, text, maxW - 80 * u, 700, 72 * u);
-  const fs = parseFloat(g.font.split(' ')[1]);
-  const tw = g.measureText(text).width;
-  const w = Math.max(tw + 96 * u, 300 * u);
-  const h = (k.sub ? 170 : 130) * u;
-  const x = side === 'right' ? W - w - 90 * u : 90 * u;
-  const y = H * 0.36 - h / 2;
-  const off = (1 - a) * 50 * u * (side === 'right' ? 1 : -1);
-  g.globalAlpha = a;
-  g.shadowColor = 'rgba(0,0,0,0.18)'; g.shadowBlur = 40 * u; g.shadowOffsetY = 12 * u;
-  roundRect(g, x + off, y, w, h, 20 * u, 'rgba(255,255,255,0.96)');
-  g.shadowColor = 'transparent';
-  g.fillStyle = cl.accent;
-  g.fillRect(x + off + 48 * u, y + 30 * u, 44 * u, 5 * u);
-  g.fillStyle = cl.primary;
-  g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-  g.font = `700 ${fs}px Inter, sans-serif`;
-  g.fillText(text, x + off + 48 * u, y + 40 * u + fs);
-  if (k.sub) {
-    g.fillStyle = '#5b6b6b';
-    g.font = `400 ${28 * u}px Inter, sans-serif`;
-    g.fillText(k.sub, x + off + 48 * u, y + 40 * u + fs + 44 * u, w - 96 * u);
+// Moldura: faixas de cinema, vinheta, granulado e grade "blueprint"
+let grainTile;
+function drawFrameFx(g, W, H, u, st, T) {
+  const f = st.frame;
+  if (f.grid) {
+    g.save();
+    g.strokeStyle = 'rgba(160,190,255,0.10)'; g.lineWidth = Math.max(1, u);
+    const step = 60 * u;
+    g.beginPath();
+    for (let x = 0; x <= W; x += step) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y <= H; y += step) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.stroke();
+    g.restore();
   }
-  g.globalAlpha = 1;
+  if (f.vignette) {
+    const gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) / 2);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, `rgba(0,0,0,${f.vignette})`);
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  }
+  if (f.grain) {
+    if (!grainTile) {
+      grainTile = document.createElement('canvas'); grainTile.width = grainTile.height = 192;
+      const gc = grainTile.getContext('2d'), id = gc.createImageData(192, 192);
+      for (let i = 0; i < id.data.length; i += 4) { const v = Math.random() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+      gc.putImageData(id, 0, 0);
+    }
+    g.save();
+    g.globalAlpha = f.grain; g.globalCompositeOperation = 'overlay';
+    const p = g.createPattern(grainTile, 'repeat');
+    const o = Math.floor((T * 24) % 8) * 23;
+    g.translate(-o, -o * 0.7); g.fillStyle = p; g.fillRect(o, o * 0.7, W, H);
+    g.restore();
+  }
+  if (f.letterbox) {
+    const b = H * f.letterbox;
+    g.fillStyle = '#000'; g.fillRect(0, 0, W, b); g.fillRect(0, H - b, W, b);
+  }
 }
 
-function drawCaptions(g, caps, T, W, H, u, cl) {
+function drawEyebrow(g, text, x, y, st, u, align, dark) {
+  const size = 22 * u;
+  g.save();
+  g.font = `600 ${size}px ${FONTS.mono}`;
+  if (hasLS) g.letterSpacing = `${(0.18 * size).toFixed(1)}px`;
+  const w = g.measureText(text).width + 30 * u, h = size + 20 * u;
+  const bx = align === 'right' ? x - w : x;
+  roundRect(g, bx, y, w, h, h / 2, dark ? 'rgba(8,12,24,0.92)' : hexA(st.accent, 0.14));
+  g.fillStyle = dark ? '#FFFFFF' : st.accent;
+  g.textBaseline = 'middle'; g.textAlign = 'left';
+  g.fillText(text, bx + 15 * u, y + h / 2 + 1);
+  g.restore();
+  return h;
+}
+
+// Cartões de destaque (variam por modelo)
+function drawCard(g, k, a, side, W, H, u, st) {
+  const cs = st.card;
+  const text = cs.upper ? k.text.toUpperCase() : k.text.charAt(0).toUpperCase() + k.text.slice(1);
+  const maxW = W * 0.38;
+  let fs = cs.size * u;
+  setFont(g, st, cs, fs);
+  while (g.measureText(text).width > maxW - 90 * u && fs > 20) { fs -= 2; setFont(g, st, cs, fs); }
+  const tw = g.measureText(text).width;
+  const padX = 48 * u, padY = 34 * u;
+  const eb = cs.eyebrow && cs.variant !== 'minimal' ? 60 * u : 0;
+  const subH = k.sub ? 44 * u : 0;
+  const w = Math.max(tw + padX * 2, 280 * u);
+  const h = fs * 1.05 + padY * 2 + subH;
+  const right = side === 'right';
+  const x = right ? W - w - 90 * u : 90 * u;
+  const y = H * 0.34 - h / 2 + eb / 2;
+  const off = (1 - a) * 50 * u * (right ? 1 : -1);
+  const X = x + off;
+  g.save();
+  g.globalAlpha = a;
+  if (eb) drawEyebrow(g, cs.eyebrow, right ? X + w : X, y - eb, st, u, right ? 'right' : 'left', cs.variant === 'dark');
+  let fg = st.primary, subFg = '#5B6B6B';
+  switch (cs.variant) {
+    case 'dark':
+      shadow(g, st, u); roundRect(g, X, y, w, h, cs.radius * u, hexA(st.primary, 0.94)); noShadow(g);
+      g.strokeStyle = 'rgba(255,255,255,0.10)'; g.lineWidth = 1.5 * u; rr(g, X, y, w, h, cs.radius * u); g.stroke();
+      roundRect(g, X + padX, y + padY - 14 * u, 40 * u, 6 * u, 3 * u, st.accent);
+      fg = '#FFFFFF'; subFg = 'rgba(255,255,255,0.7)'; break;
+    case 'glass':
+      shadow(g, st, u, 1.3); roundRect(g, X, y, w, h, cs.radius * u, 'rgba(255,255,255,0.80)'); noShadow(g);
+      g.strokeStyle = 'rgba(255,255,255,0.9)'; g.lineWidth = 2 * u; rr(g, X, y, w, h, cs.radius * u); g.stroke();
+      roundRect(g, X + padX, y + padY - 14 * u, 34 * u, 6 * u, 3 * u, st.accent); break;
+    case 'outline':
+      roundRect(g, X, y, w, h, cs.radius * u, 'rgba(0,0,0,0.38)');
+      g.strokeStyle = st.accent; g.lineWidth = 2 * u; rr(g, X + 8 * u, y + 8 * u, w - 16 * u, h - 16 * u, 0); g.stroke();
+      fg = st.text; subFg = hexA(st.text, 0.75); break;
+    case 'minimal':
+      roundRect(g, X + padX, y + padY - 10 * u, 70 * u, 3 * u, 0, st.accent);
+      g.shadowColor = 'rgba(0,0,0,0.55)'; g.shadowBlur = 18 * u;
+      fg = st.text; subFg = hexA(st.text, 0.8); break;
+    case 'tag':
+      g.translate(X + w / 2, y + h / 2); g.rotate(-0.035); g.translate(-(X + w / 2), -(y + h / 2));
+      shadow(g, st, u, 1.2); roundRect(g, X, y, w, h, cs.radius * u, st.accent); noShadow(g);
+      fg = '#111111'; subFg = 'rgba(0,0,0,0.7)'; break;
+    case 'bar':
+      roundRect(g, X, y, w, h, cs.radius * u, 'rgba(10,10,10,0.82)');
+      g.fillStyle = st.accent; g.fillRect(right ? X + w - 10 * u : X, y, 10 * u, h);
+      fg = '#FFFFFF'; subFg = 'rgba(255,255,255,0.75)'; break;
+    default: // light
+      shadow(g, st, u); roundRect(g, X, y, w, h, cs.radius * u, 'rgba(255,255,255,0.96)'); noShadow(g);
+      roundRect(g, X + padX, y + padY - 14 * u, 44 * u, 6 * u, 3 * u, st.accent);
+  }
+  setFont(g, st, cs, fs);
+  g.fillStyle = fg; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  g.fillText(text, X + padX, y + padY + fs * 0.92);
+  noShadow(g); resetLS(g);
+  if (k.sub) {
+    g.fillStyle = subFg; g.font = `400 ${28 * u}px ${FONTS.inter}`;
+    g.fillText(k.sub, X + padX, y + padY + fs + 36 * u, w - padX * 2);
+  }
+  g.restore();
+}
+
+// Nome + CRM
+function drawLower(g, a, cl, st, W, H, u) {
+  const right = cl.expertSide === 'right';
+  const sub = [cl.specialty, cl.crm].filter(Boolean).join('  ·  ');
+  const y0 = H * 0.66 - st.frame.letterbox * H * 0.5;
+  const nameSize = 44 * u, subSize = 26 * u;
+  g.save();
+  g.globalAlpha = a;
+  const nameFont = st.lower === 'line' ? `300 ${nameSize * 1.05}px ${FONTS[st.card.font] || FONTS.inter}` : `700 ${nameSize}px ${FONTS.tight}`;
+  g.font = nameFont;
+  const w1 = g.measureText(cl.name || '').width;
+  g.font = `500 ${subSize}px ${st.lower === 'dark' ? FONTS.mono : FONTS.inter}`;
+  const w2 = g.measureText(sub).width;
+  const w = Math.max(w1, w2) + 64 * u, h = (sub ? 114 : 80) * u;
+  const off = (1 - a) * 30 * u * (right ? 1 : -1);
+  const x = (right ? W - 80 * u - w : 80 * u) + off;
+  const y = y0 - 62 * u;
+  let nameColor = st.primary, subColor = '#5B6B6B';
+  if (st.lower === 'dark') {
+    shadow(g, st, u, 0.8); roundRect(g, x, y, w, h, 16 * u, hexA(st.primary, 0.94)); noShadow(g);
+    nameColor = '#FFFFFF'; subColor = st.accent;
+  } else if (st.lower === 'line') {
+    g.fillStyle = st.accent; g.fillRect(x + 32 * u, y + h + 4 * u, 90 * u, 2 * u);
+    g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 16 * u;
+    nameColor = st.text; subColor = hexA(st.text, 0.8);
+  } else if (st.lower === 'bar') {
+    roundRect(g, x, y, w, h, 4 * u, 'rgba(10,10,10,0.82)');
+    g.fillStyle = st.accent; g.fillRect(right ? x + w - 10 * u : x, y, 10 * u, h);
+    nameColor = '#FFFFFF'; subColor = 'rgba(255,255,255,0.78)';
+  } else {
+    shadow(g, st, u, 0.8); roundRect(g, x, y, w, h, 14 * u, 'rgba(255,255,255,0.95)'); noShadow(g);
+    g.fillStyle = st.accent; g.fillRect(right ? x + w - 7 * u : x, y, 7 * u, h);
+  }
+  g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  g.font = nameFont; g.fillStyle = nameColor;
+  if (hasLS && st.lower === 'line') g.letterSpacing = `${0.08 * nameSize}px`;
+  g.fillText(st.lower === 'line' ? (cl.name || '').toUpperCase() : cl.name || '', x + 32 * u, y + 56 * u);
+  resetLS(g);
+  if (sub) {
+    g.font = `500 ${subSize}px ${st.lower === 'dark' ? FONTS.mono : FONTS.inter}`; g.fillStyle = subColor;
+    g.fillText(sub, x + 32 * u, y + 94 * u);
+  }
+  g.restore();
+}
+
+// Abertura com o título da aula
+function drawOpening(g, a, T, title, module, cl, st, W, H, u) {
+  g.save();
+  const kind = st.opening;
+  const bg = kind === 'cinema' ? '#000000' : kind === 'editorial' ? '#F4F1EA' : st.primary;
+  const fg = kind === 'editorial' ? '#211F2E' : kind === 'cinema' ? '#F4F1EA' : (st.text || '#FFFFFF');
+  g.globalAlpha = a * (kind === 'cinema' ? 0.96 : 0.93);
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  g.globalAlpha = a;
+  if (kind === 'grid') {
+    g.strokeStyle = 'rgba(160,190,255,0.14)'; g.lineWidth = Math.max(1, u);
+    const step = 60 * u; g.beginPath();
+    for (let x = 0; x <= W; x += step) { g.moveTo(x, 0); g.lineTo(x, H); }
+    for (let y = 0; y <= H; y += step) { g.moveTo(0, y); g.lineTo(W, y); }
+    g.stroke();
+  }
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const rise = (1 - ease(T / 0.6)) * 18 * u;
+  if (kind === 'cinema') {
+    g.font = `300 ${22 * u}px ${FONTS.inter}`;
+    if (hasLS) g.letterSpacing = `${8 * u}px`;
+    g.fillStyle = hexA(fg, 0.7); g.fillText(module.toUpperCase(), W / 2, H / 2 - 70 * u + rise);
+    const s = fitText(g, title.toUpperCase(), W * 0.8, 300, 64 * u, FONTS[st.card.font] || FONTS.tight);
+    g.font = `300 ${s}px ${FONTS[st.card.font] || FONTS.tight}`;
+    if (hasLS) g.letterSpacing = `${0.22 * s}px`;
+    g.fillStyle = fg; g.fillText(title.toUpperCase(), W / 2, H / 2 + rise);
+    if (hasLS) g.letterSpacing = `${6 * u}px`;
+    g.font = `400 ${22 * u}px ${FONTS.inter}`; g.fillStyle = hexA(fg, 0.6);
+    g.fillText((cl.name || '').toUpperCase(), W / 2, H / 2 + 80 * u + rise);
+  } else {
+    if (kind === 'grid' || kind === 'editorial') {
+      const label = (module || 'AULA').toUpperCase();
+      g.font = `600 ${22 * u}px ${FONTS.mono}`;
+      if (hasLS) g.letterSpacing = `${4 * u}px`;
+      const lw = g.measureText(label).width + 40 * u, lh = 50 * u;
+      if (kind === 'grid') roundRect(g, W / 2 - lw / 2, H / 2 - 130 * u + rise, lw, lh, lh / 2, 'rgba(8,12,24,0.9)');
+      g.fillStyle = kind === 'grid' ? '#FFFFFF' : st.accent;
+      g.fillText(label, W / 2, H / 2 - 105 * u + rise);
+      resetLS(g);
+    } else {
+      g.fillStyle = st.accent; g.fillRect(W / 2 - 40 * u, H / 2 - 92 * u + rise, 80 * u, 5 * u);
+      g.font = `500 ${24 * u}px ${FONTS.inter}`; g.fillStyle = hexA(fg, 0.8);
+      if (hasLS) g.letterSpacing = `${3 * u}px`;
+      g.fillText(module.toUpperCase(), W / 2, H / 2 - 52 * u + rise);
+      resetLS(g);
+    }
+    const fam = kind === 'editorial' ? FONTS.tight : FONTS[st.card.font] || FONTS.tight;
+    const wt = kind === 'editorial' ? 800 : 700;
+    const s = fitText(g, title, W * 0.82, wt, (kind === 'editorial' ? 84 : 70) * u, fam);
+    g.font = `${wt} ${s}px ${fam}`;
+    if (hasLS && kind === 'editorial') g.letterSpacing = `${-0.03 * s}px`;
+    g.fillStyle = fg; g.fillText(title, W / 2, H / 2 + 14 * u + rise);
+    resetLS(g);
+    g.font = `400 ${26 * u}px ${FONTS.inter}`; g.fillStyle = hexA(fg, 0.75);
+    g.fillText(cl.name || '', W / 2, H / 2 + 92 * u + rise);
+  }
+  resetLS(g);
+  g.restore();
+}
+
+// Legendas (variam por modelo)
+function drawCaptions(g, caps, T, W, H, u, st, cl) {
   const p = caps.find((c) => T >= c.s && T <= c.e + 0.05);
   if (!p) return;
-  const y = cl.captionPos === 'middle' ? H * 0.62 : H * 0.86;
-  g.textAlign = 'left'; g.textBaseline = 'middle';
+  const cs = st.caption;
+  const lb = st.frame.letterbox * H;
+  const y = cl.captionPos === 'middle' ? H * 0.62 : (lb ? H - lb / 2 : H * (cs.mode === 'palavra' ? 0.8 : 0.86));
   let words = p.words;
-  if (cl.captionStyle === 'palavra') {
+  if (cs.mode === 'palavra') {
     const at = words.findIndex((w) => T < w.e);
     const j = at < 0 ? words.length - 1 : at;
     const start = Math.floor(j / 3) * 3;
     words = words.slice(start, start + 3);
   }
-  const fs = (cl.captionStyle === 'palavra' ? 64 : 48) * u;
-  const weight = cl.captionStyle === 'palavra' ? 800 : 600;
-  g.font = `${weight} ${fs}px Inter, sans-serif`;
+  let fs = (lb ? Math.min(cs.size, lb / u * 0.42) : cs.size) * u;
+  setFont(g, st, cs, fs);
   const space = g.measureText(' ').width;
-  const parts = words.map((w) => ({ ...w, txt: cl.captionStyle === 'palavra' ? w.w.toUpperCase() : w.w, wid: 0 }));
-  parts.forEach((p) => (p.wid = g.measureText(p.txt).width));
-  const total = parts.reduce((a, p) => a + p.wid, 0) + space * (parts.length - 1);
+  const parts = words.map((w) => ({ ...w, txt: cs.upper ? w.w.toUpperCase() : w.w }));
+  let total = 0;
+  const measure = () => { parts.forEach((pp) => (pp.wid = g.measureText(pp.txt).width)); total = parts.reduce((a, pp) => a + pp.wid, 0) + space * (parts.length - 1); };
+  measure();
+  while (total > W * 0.86 && fs > 16) { fs -= 2; setFont(g, st, cs, fs); measure(); }
   let x = W / 2 - total / 2;
-  if (cl.captionStyle === 'bloco' || cl.captionStyle === 'karaoke') {
-    roundRect(g, x - 28 * u, y - fs * 0.85, total + 56 * u, fs * 1.7, 14 * u, 'rgba(10,20,20,0.62)');
+  g.textAlign = 'left'; g.textBaseline = 'middle';
+  const boxFill = cs.box === 'light' ? 'rgba(255,255,255,0.94)' : cs.box === 'dark' ? 'rgba(10,15,20,0.66)' : null;
+  if (boxFill && cs.mode !== 'palavra') {
+    if (st.shadow && cs.box === 'light') shadow(g, st, u, 0.6);
+    roundRect(g, x - 26 * u, y - fs * 0.85, total + 52 * u, fs * 1.7, (cs.box === 'light' ? fs * 0.85 : 14 * u), boxFill);
+    noShadow(g);
   }
-  for (const p of parts) {
-    const active = T >= p.s && T < p.e;
-    const kw = isKeyword(p.w, cl);
+  const base = cs.color || (cs.box === 'light' ? st.primary : '#FFFFFF');
+  for (const pp of parts) {
+    const active = T >= pp.s && T < pp.e;
+    const kw = isKeyword(pp.w, cl);
     let scale = 1;
-    if (cl.captionStyle === 'palavra' && active) scale = 1 + 0.12 * (1 - ease((T - p.s) / 0.18));
-    if (cl.captionStyle === 'karaoke' && active) roundRect(g, x - 8 * u, y - fs * 0.62, p.wid + 16 * u, fs * 1.24, 8 * u, cl.accent);
+    if (cs.mode === 'palavra' && active) scale = 1 + 0.14 * (1 - ease((T - pp.s) / 0.18));
+    if (cs.active === 'bg' && active && cs.mode === 'karaoke') roundRect(g, x - 8 * u, y - fs * 0.62, pp.wid + 16 * u, fs * 1.24, 8 * u, st.accent);
     g.save();
-    g.translate(x + p.wid / 2, y);
+    g.translate(x + pp.wid / 2, y);
     g.scale(scale, scale);
-    g.lineWidth = 8 * u; g.lineJoin = 'round';
-    if (cl.captionStyle === 'palavra') { g.strokeStyle = 'rgba(0,0,0,0.75)'; g.strokeText(p.txt, -p.wid / 2, 0); }
-    g.fillStyle = kw && !(cl.captionStyle === 'karaoke' && active) ? cl.accent : '#ffffff';
-    if (cl.captionStyle === 'palavra' && T < p.s) g.globalAlpha = 0.55;
-    g.fillText(p.txt, -p.wid / 2, 0);
+    if (cs.mode === 'palavra') {
+      g.lineWidth = 10 * u; g.lineJoin = 'round'; g.strokeStyle = 'rgba(0,0,0,0.9)';
+      g.strokeText(pp.txt, -pp.wid / 2, 0);
+    } else if (!boxFill) {
+      g.shadowColor = 'rgba(0,0,0,0.75)'; g.shadowBlur = 12 * u; g.shadowOffsetY = 2 * u;
+    }
+    let color = base;
+    if (cs.mode === 'palavra') color = active || kw ? st.accent : '#FFFFFF';
+    else if (cs.active === 'bg' && active && cs.mode === 'karaoke') color = '#FFFFFF';
+    else if ((cs.active === 'color' && active && cs.mode !== 'limpa') || kw) color = cs.box === 'light' && !kw ? st.accent : st.accent;
+    g.fillStyle = color;
+    if (cs.mode === 'palavra' && T < pp.s) g.globalAlpha = 0.55;
+    g.fillText(pp.txt, -pp.wid / 2, 0);
     g.restore();
-    x += p.wid + space;
+    x += pp.wid + space;
   }
+  resetLS(g);
 }
