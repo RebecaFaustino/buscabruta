@@ -203,7 +203,7 @@ function viewHome() {
       ${state.clients.map((c) => {
         const cs = state.courses.filter((k) => k.clientId === c.id);
         return `<a class="card client-card" href="#/cliente/${c.id}">
-          <div class="swatch" style="background:${esc(c.primary)}"><span style="background:${esc(c.accent)}"></span></div>
+          <canvas class="client-prev" width="640" height="360" data-cprev="${c.id}"></canvas>
           <h3>${esc(c.name)}</h3>
           <p>${esc(c.specialty || '—')} ${c.crm ? '· ' + esc(c.crm) : ''}</p>
           <p class="muted">${cs.length} curso(s)</p>
@@ -213,6 +213,10 @@ function viewHome() {
     </section>`;
   $('#homeNewClient').onclick = () => $('#newClientBtn').click();
   installHint(view);
+  // miniatura do estilo de cada cliente (desenhada aos poucos, sem travar a tela)
+  const cvs = [...view.querySelectorAll('[data-cprev]')];
+  const next = () => { const cv = cvs.shift(); if (!cv || !cv.isConnected) return; const cl = getClient(cv.dataset.cprev); if (cl) drawStylePreview(cv, { ...cl, openingTitle: false }); requestAnimationFrame(next); };
+  requestAnimationFrame(next);
 }
 
 // ======================= Edição automática (um toque) =======================
@@ -405,18 +409,20 @@ async function viewReady(course, lessonId, fresh = false) {
       </div>
       <section class="panel">
         <ul class="facts">
-          <li><b>${fmtLong(d)}</b><span>${raw > d + 1 ? `de ${fmtLong(raw)} — ${Math.round((1 - d / raw) * 100)}% mais curta` : 'duração'}</span></li>
+          <li><b>${fmtLong(d)}</b><span>${raw > d + 1 ? `−${Math.round((1 - d / raw) * 100)}% de ${fmtLong(raw)}` : 'duração'}</span></li>
           <li><b>${lesson.clips.length}</b><span>cortes</span></li>
-          <li><b>${nWords ? 'Sim' : 'Não'}</b><span>legenda</span></li>
+          <li><b>${nWords ? '✓' : '—'}</b><span>legenda</span></li>
           <li><b>${lesson.cards.length}</b><span>destaques</span></li>
         </ul>
-        <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
-        <label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros <button class="ghost small" id="rHear" type="button">▶ Ouvir</button></label>
+        <div class="row-2">
+          <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+          <div class="sfx-line"><label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros</label><button class="ghost small" id="rHear" type="button">▶ Ouvir</button></div>
+        </div>
         <div id="rOut"></div>
-        <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">Ajustar detalhes</a><a class="ghost btn-ghost" href="#/novo">Editar outro vídeo</a></div>
-        <details class="sec" open><summary>Pedir ajuste ao Claude</summary>${chatHTML()}</details>
-        <details class="sec"><summary>Estilo do vídeo · modelos, cores, legenda e destaques</summary><div id="rStyle" class="style-panel"></div></details>
-        ${lesson.description ? `<details><summary>Descrição para a plataforma</summary><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></details>` : ''}
+        <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">✂ Ajustar cortes e legenda</a><a class="ghost btn-ghost" href="#/novo">+ Editar outro vídeo</a></div>
+        <details class="grp" open><summary><b>💬 Pedir ajuste ao Claude</b><small>escreva o que quer mudar</small></summary><div class="grp-body">${chatHTML()}</div></details>
+        <details class="grp"><summary><b>🎨 Estilo do vídeo</b><small>modelos, cores, legenda</small></summary><div class="grp-body"><div id="rStyle" class="style-panel"></div></div></details>
+        ${lesson.description ? `<details class="grp"><summary><b>📝 Descrição da aula</b><small>para a plataforma</small></summary><div class="grp-body"><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></div></details>` : ''}
       </section>
     </div>`;
   const player = new Player($('#rPrev'));

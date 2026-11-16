@@ -395,3 +395,14 @@ details.grp[open] > summary::after { transform: rotate(90deg); }
 }
 .tabs { overflow-x: auto; scrollbar-width: none; } .tabs::-webkit-scrollbar { display: none; } .tabs button { white-space: nowrap; flex: 0 0 auto; }
 .tabs button { padding: 11px 10px; }
+[hidden] { display: none !important; }
+.client-prev { display: block; width: 100%; height: auto; aspect-ratio: 16/9; border-radius: 8px; background: var(--surface-2); margin-bottom: 4px; }
+.facts { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.facts li { padding: 8px 10px; }
+.facts b { font-size: 16px; }
+.facts span { font-size: 11px; line-height: 1.3; display: block; }
+.row-2 { display: grid; gap: 10px; }
+.sfx-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sfx-line .check { margin: 0; }
+.ready .grp-body .chat { margin: 0; }
+@media (max-width: 760px) { .ready details.grp > summary small { display: none; } }
