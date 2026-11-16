@@ -10,6 +10,16 @@ Roda 100% no navegador. Vídeos e projetos ficam salvos no próprio computador (
 
 https://claude.ai/artifact/TktWxL7iosS8x65jYTAH69 — abra no navegador do celular e use "Adicionar à Tela de Início".
 
+## Uso rápido (um toque)
+
+1. Toque em **Editar um vídeo agora**, escolha o cliente e o vídeo.
+2. O app faz sozinho: cortes secos, zoom dinâmico, legenda (Whisper no próprio aparelho),
+   revisão de termos médicos com IA, destaques de palavras-chave e descrição da aula.
+3. Toque em **Gerar vídeo final** e depois em **Baixar vídeo**.
+
+O transcritor (Whisper base, ~100 MB) é servido junto do app em partes. Para gerar esses arquivos
+localmente rode `./scripts/preparar-modelos.sh` (eles ficam fora do git).
+
 ## Como abrir localmente
 
 ```bash

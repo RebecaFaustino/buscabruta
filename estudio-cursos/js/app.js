@@ -5,6 +5,7 @@ import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player } from './player.js';
 import { renderLesson, extOf, pickMime } from './render.js';
+import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards } from './pipeline.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -16,13 +17,6 @@ const lessonDur = (l) => l.clips.reduce((a, c) => a + c.out - c.in, 0);
 const rawDur = (l) => l.sources.reduce((a, s) => a + (s.duration || 0), 0);
 
 const view = $('#view');
-let whisperOK;
-function whisperAvailable() {
-  whisperOK ??= fetch('https://huggingface.co/api/models/Xenova/whisper-base', { method: 'HEAD', mode: 'no-cors', cache: 'no-store' })
-    .then(() => true, () => false);
-  return whisperOK;
-}
-const envs = new Map(); // srcId -> envelope (forma de onda)
 
 export function toast(msg, kind = '') {
   const t = document.createElement('div');
@@ -99,6 +93,8 @@ function route() {
   if (page === 'curso' && getCourse(a)) return viewCourse(getCourse(a));
   if (page === 'aula' && getCourse(a)) return viewEditor(getCourse(a), b);
   if (page === 'exportar' && getCourse(a)) return viewExport(getCourse(a));
+  if (page === 'novo') return viewAuto();
+  if (page === 'pronto' && getCourse(a)) return viewReady(getCourse(a), b);
   viewHome();
 }
 
@@ -122,18 +118,23 @@ $('#newClientBtn').onclick = () => {
 
 // ======================= Início =======================
 function viewHome() {
-  const lessons = state.courses.flatMap((c) => c.modules.flatMap((m) => m.lessons));
-  const rendered = lessons.filter((l) => l.render).length;
+  const lessons = state.courses.flatMap((c) => c.modules.flatMap((m) => m.lessons.map((l) => ({ c, m, l }))));
+  const recent = lessons.filter((x) => x.l.sources.length).slice(-6).reverse();
   view.innerHTML = `
-    <header class="page-head">
-      <div><p class="eyebrow">Estúdio de Cursos</p><h1>Painel</h1></div>
-    </header>
-    <section class="stats">
-      <div><b>${state.clients.length}</b><span>clientes</span></div>
-      <div><b>${state.courses.length}</b><span>cursos</span></div>
-      <div><b>${lessons.length}</b><span>aulas</span></div>
-      <div><b>${rendered}</b><span>aulas prontas para exportar</span></div>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Estúdio de Cursos</p>
+        <h1>Envie o vídeo. A aula volta editada.</h1>
+        <p class="lead">Cortes secos, zoom dinâmico, legenda, termos médicos revisados e palavras-chave em destaque, no padrão visual de cada cliente.</p>
+      </div>
+      <a class="btn big" href="#/novo">Editar um vídeo agora</a>
     </section>
+    ${recent.length ? `<h2 class="section-title">Últimas aulas</h2>
+    <ul class="recent">${recent.map(({ c, l }) => `<li>
+      <span class="dot" style="background:${esc(getClient(c.clientId)?.accent || '#999')}"></span>
+      <span class="grow">${esc(l.title)}<small>${esc(getClient(c.clientId)?.name || '')} · ${fmtLong(lessonDur(l))}</small></span>
+      ${l.render ? '<span class="tag ok strong">pronta</span>' : ''}
+      <a class="btn small ghost" href="#/pronto/${c.id}/${l.id}">Abrir</a></li>`).join('')}</ul>` : ''}
     <h2 class="section-title">Clientes</h2>
     <section class="grid">
       ${state.clients.map((c) => {
@@ -142,21 +143,259 @@ function viewHome() {
           <div class="swatch" style="background:${esc(c.primary)}"><span style="background:${esc(c.accent)}"></span></div>
           <h3>${esc(c.name)}</h3>
           <p>${esc(c.specialty || '—')} ${c.crm ? '· ' + esc(c.crm) : ''}</p>
-          <p class="muted">${cs.length} curso(s) · ${PLATFORMS[c.platform]?.name || ''}</p>
+          <p class="muted">${cs.length} curso(s)</p>
         </a>`;
       }).join('')}
       <button class="card add-card" id="homeNewClient">+ Novo cliente</button>
-    </section>
-    <h2 class="section-title">Fluxo recomendado</h2>
-    <ol class="flow">
-      <li><b>Perfil do cliente</b> — cores, logo, CRM, palavras-chave e lado do expert.</li>
-      <li><b>Estrutura do curso</b> — módulos e aulas.</li>
-      <li><b>Edição</b> — importe as gravações, gere os cortes secos, junte clipes, aplique zoom dinâmico.</li>
-      <li><b>Legendas</b> — transcrição automática no navegador e revisão.</li>
-      <li><b>Destaques</b> — palavras-chave animadas ao lado do expert.</li>
-      <li><b>Exportar</b> — preset da plataforma (Hotmart, Eduzz, Sympla, Kiwify…) e pacote .zip.</li>
-    </ol>`;
+    </section>`;
   $('#homeNewClient').onclick = () => $('#newClientBtn').click();
+}
+
+// ======================= Edição automática (um toque) =======================
+function aulasAvulsas(client) {
+  let course = state.courses.find((k) => k.clientId === client.id && k.auto);
+  if (!course) {
+    course = newCourse(client.id, 'Aulas avulsas');
+    course.auto = true;
+    course.modules[0].title = 'Aulas';
+    course.modules[0].lessons = [];
+    state.courses.push(course);
+  }
+  return course;
+}
+
+function viewAuto() {
+  let lastClient;
+  try { lastClient = localStorage.getItem('ec-last-client'); } catch {}
+  const sel = getClient(lastClient) ? lastClient : state.clients[0]?.id || 'novo';
+  const today = new Date().toLocaleDateString('pt-BR');
+  view.innerHTML = `
+    <header class="page-head"><div><p class="eyebrow"><a href="#/">Início</a> / Editar vídeo</p><h1>Editar um vídeo</h1></div></header>
+    <section class="panel wizard">
+      <div class="form">
+        <label>Para qual cliente?
+          <select id="wClient">
+            ${state.clients.map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}${c.specialty ? ' — ' + esc(c.specialty) : ''}</option>`).join('')}
+            <option value="novo" ${sel === 'novo' ? 'selected' : ''}>+ Novo cliente</option>
+          </select>
+        </label>
+        <div id="wNew" class="row2" hidden>
+          <label>Nome do expert<input id="wName" placeholder="Dra. Ana Souza"></label>
+          <label>Especialidade<input id="wSpec" placeholder="Cardiologia"></label>
+        </div>
+        <label>Nome da aula<input id="wTitle" value="Aula de ${today}"></label>
+      </div>
+      <label class="drop big-drop" id="wDrop">
+        <input type="file" id="wFile" accept="video/*" hidden>
+        <b>Escolher o vídeo</b>
+        <span>Da galeria do celular ou do computador (MP4 ou MOV).</span>
+      </label>
+      <details class="yt"><summary>O vídeo está no YouTube?</summary>
+        <p>O YouTube não permite que outros apps baixem os vídeos. Baixe o arquivo primeiro e depois escolha aqui:</p>
+        <ol><li>No computador, abra <b>studio.youtube.com</b> e vá em <b>Conteúdo</b>.</li>
+        <li>Nos três pontinhos <b>⋮</b> do vídeo, toque em <b>Baixar</b>.</li>
+        <li>Volte aqui e toque em <b>Escolher o vídeo</b>.</li></ol>
+        <p class="hint">Funciona para vídeos do seu canal ou do canal do cliente (com acesso ao YouTube Studio).</p>
+      </details>
+    </section>`;
+  const cs = $('#wClient');
+  const toggle = () => ($('#wNew').hidden = cs.value !== 'novo');
+  cs.onchange = toggle; toggle();
+  const drop = $('#wDrop');
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); start(e.dataTransfer.files[0]); };
+  $('#wFile').onchange = (e) => start(e.target.files[0]);
+
+  function start(file) {
+    if (!file || !isMedia(file)) return toast('Escolha um arquivo de vídeo (MP4 ou MOV).', 'err');
+    let client = getClient(cs.value);
+    if (!client) {
+      const name = $('#wName').value.trim();
+      if (!name) { $('#wName').focus(); return toast('Digite o nome do expert.', 'err'); }
+      client = newClient({ name, specialty: $('#wSpec').value.trim() });
+      state.clients.push(client);
+    }
+    try { localStorage.setItem('ec-last-client', client.id); } catch {}
+    const course = aulasAvulsas(client);
+    const lesson = newLesson($('#wTitle').value.trim() || file.name.replace(/\.[^.]+$/, ''));
+    course.modules[0].lessons.push(lesson);
+    save();
+    cur = `#/pronto/${course.id}/${lesson.id}`;
+    try { localStorage.setItem('ec-route', cur); } catch {}
+    renderSidebar();
+    runAuto(course, lesson, client, file);
+  }
+}
+
+const STEPS = [
+  ['import', 'Recebendo o vídeo'],
+  ['cut', 'Removendo pausas e silêncios'],
+  ['subs', 'Criando a legenda'],
+  ['review', 'Revisando termos médicos'],
+  ['keys', 'Destacando palavras-chave'],
+  ['desc', 'Escrevendo a descrição da aula'],
+];
+
+async function runAuto(course, lesson, client, file) {
+  view.innerHTML = `
+    <header class="page-head"><div><p class="eyebrow">${esc(client.name)}</p><h1>${esc(lesson.title)}</h1></div></header>
+    <section class="panel wizard">
+      <p class="lead">Editando… Deixe esta tela aberta e o aparelho ligado na tomada.</p>
+      <ol class="steps">${STEPS.map(([k, t]) => `<li data-step="${k}"><span class="st"></span><span class="grow">${t}<small></small></span></li>`).join('')}</ol>
+      <div class="progress"><span id="aBar"></span><em id="aLbl"></em></div>
+    </section>`;
+  let lock = null;
+  try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+  const mark = (k, st, note = '') => {
+    const li = view.querySelector(`[data-step="${k}"]`);
+    if (!li) return;
+    li.className = st;
+    li.querySelector('small').textContent = note;
+  };
+  const bar = (f, txt) => { const b = $('#aBar'), l = $('#aLbl'); if (!b) return; if (f != null) b.style.width = Math.round(f * 100) + '%'; b.classList.toggle('pulse', f == null); if (f == null) b.style.width = '100%'; if (txt) l.textContent = txt; };
+  const smp = await cap('sample');
+  const warn = [];
+  try {
+    mark('import', 'run'); bar(0.02, 'Recebendo o vídeo…');
+    const src = await importVideo(lesson, file);
+    mark('import', 'ok', `${fmtLong(src.duration)} de gravação`);
+
+    mark('cut', 'run'); bar(0.08, 'Analisando o áudio…');
+    const removed = await autoCutLesson(lesson, client);
+    mark('cut', 'ok', `${lesson.clips.length} cortes · ${fmtLong(removed)} removidos`);
+
+    mark('subs', 'run');
+    try {
+      await transcribeLesson(lesson, ({ text, progress, busy }) => bar(busy ? null : 0.1 + (progress || 0) * 0.3, text));
+      const n = Object.values(lesson.words).reduce((a, w) => a + w.length, 0);
+      mark('subs', n ? 'ok' : 'warn', n ? `${n} palavras` : 'nenhuma fala reconhecida');
+    } catch (e) {
+      console.error(e);
+      warn.push('legenda');
+      mark('subs', 'warn', 'não foi possível agora — dá para criar depois no editor');
+    }
+
+    const hasWords = Object.values(lesson.words).some((w) => w.length);
+    if (smp && hasWords) {
+      mark('review', 'run');
+      try {
+        const n = await aiReviewLesson(lesson, client, smp, ({ text, progress }) => bar(0.75 + (progress || 0) * 0.15, text));
+        mark('review', 'ok', n ? `${n} frase(s) corrigida(s)` : 'nada a corrigir');
+      } catch (e) { mark('review', 'skip', 'IA indisponível agora'); }
+    } else mark('review', 'skip', hasWords ? 'disponível só na versão online' : 'sem legenda');
+
+    mark('keys', 'run'); bar(0.92, 'Criando destaques…');
+    if (hasWords) {
+      const n = keywordsAndCards(lesson, client);
+      mark('keys', 'ok', n ? `${n} destaque(s): ${client.keywords.slice(0, 4).join(', ')}` : 'nenhuma palavra-chave falada');
+    } else mark('keys', 'skip', 'precisa da legenda');
+
+    if (smp && hasWords) {
+      mark('desc', 'run'); bar(0.96, 'Escrevendo a descrição…');
+      try { lesson.description = await describeLesson(smp, client, course, lesson); mark('desc', 'ok'); }
+      catch { mark('desc', 'skip'); }
+    } else mark('desc', 'skip');
+    save();
+    bar(1, 'Pronto!');
+  } catch (e) {
+    console.error(e);
+    toast(e.message, 'err');
+    view.querySelector('.steps .run')?.classList.replace('run', 'err');
+    bar(0, e.message);
+    try { lock?.release(); } catch {}
+    return;
+  }
+  try { lock?.release(); } catch {}
+  toast('Aula editada!', 'ok');
+  viewReady(course, lesson.id, true);
+}
+
+async function describeLesson(smp, client, course, lesson) {
+  const text = timelineCaptions(lesson).map((c) => c.text).join(' ');
+  const r = await smp(`Escreva a descrição de uma aula de curso online para a área de membros (Hotmart/Eduzz/Sympla).
+Expert: ${client.name}, ${client.specialty || 'médico(a)'}. Curso: ${course.title}. Aula: ${lesson.title}.
+Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.
+Formato: 1 frase de abertura + 3 tópicos curtos com "•" sobre o que o aluno vai aprender. Máximo 90 palavras. Responda só com o texto.
+Transcrição:
+${text.slice(0, 12000)}`, { modelTier: 'quick' });
+  return r.text.trim();
+}
+
+// ======================= Aula pronta: prévia + exportar =======================
+async function viewReady(course, lessonId, fresh = false) {
+  const { lesson } = findLesson(course, lessonId);
+  if (!lesson) return go('#/');
+  const client = getClient(course.clientId);
+  const raw = rawDur(lesson), d = lessonDur(lesson);
+  const nWords = Object.values(lesson.words).reduce((a, w) => a + w.length, 0);
+  let platform = client.platform;
+  view.innerHTML = `
+    <header class="page-head"><div><p class="eyebrow"><a href="#/">Início</a> / ${esc(client.name)}</p><h1>${esc(lesson.title)}</h1></div></header>
+    ${fresh ? '<p class="banner ok-banner">Pronto! Confira a prévia e toque em <b>Gerar vídeo final</b>.</p>' : ''}
+    <div class="ready">
+      <div class="stage">
+        <div class="canvas-wrap"><canvas id="rPrev" width="1280" height="720"></canvas></div>
+        <div class="transport"><button class="play" id="rPlay" aria-label="Reproduzir">▶</button><span class="time" id="rTime"></span></div>
+      </div>
+      <section class="panel">
+        <ul class="facts">
+          <li><b>${fmtLong(d)}</b><span>${raw > d + 1 ? `de ${fmtLong(raw)} — ${Math.round((1 - d / raw) * 100)}% mais curta` : 'duração'}</span></li>
+          <li><b>${lesson.clips.length}</b><span>cortes</span></li>
+          <li><b>${nWords ? 'Sim' : 'Não'}</b><span>legenda</span></li>
+          <li><b>${lesson.cards.length}</b><span>destaques</span></li>
+        </ul>
+        <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+        <div id="rOut"></div>
+        <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">Ajustar detalhes</a><a class="ghost btn-ghost" href="#/novo">Editar outro vídeo</a></div>
+        ${lesson.description ? `<details><summary>Descrição para a plataforma</summary><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></details>` : ''}
+      </section>
+    </div>`;
+  const player = new Player($('#rPrev'));
+  player.meta = { module: course.modules.find((m) => m.lessons.includes(lesson))?.title };
+  editor = { player };
+  await document.fonts.ready;
+  await player.setLesson(lesson, client);
+  const pb = $('#rPlay'), tl = $('#rTime');
+  player.onTime = (T) => { tl.textContent = `${fmt(T)} / ${fmt(player.duration)}`; pb.textContent = player.playing ? '❚❚' : '▶'; };
+  player.onTime(0);
+  pb.onclick = () => { if (player.playing) player.stop(); else player.play(); pb.textContent = player.playing ? '❚❚' : '▶'; };
+  $('#rPlat').onchange = (e) => { platform = e.target.value; drawOut(); };
+  $('#rCopy') && ($('#rCopy').onclick = () => navigator.clipboard?.writeText(lesson.description).then(() => toast('Descrição copiada', 'ok'), () => toast('Selecione o texto e copie.')));
+
+  const base = slug(lesson.title);
+  function drawOut() {
+    const r = lesson.render;
+    const same = r && r.platform === platform;
+    $('#rOut').innerHTML = same
+      ? `<div class="render-ok"><b>✓ Vídeo final pronto</b> · ${mb(r.size)} · ${r.ext.toUpperCase()}
+          <div class="btn-row"><button class="btn" id="rDl">Baixar vídeo</button>${nWords ? '<button class="ghost" id="rSrt">Baixar legenda</button>' : ''}</div></div>`
+      : `<button class="btn big full" id="rGo">Gerar vídeo final</button>
+         <p class="hint">Leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada.</p>
+         <div class="progress" id="rProg" hidden><span></span><em></em></div>`;
+    if (same) {
+      $('#rDl').onclick = async () => download(await db.getMedia(r.mediaId), `${base}.${r.ext}`);
+      $('#rSrt') && ($('#rSrt').onclick = () => download(new Blob([srt(timelineCaptions(lesson))], { type: 'text/plain' }), base + '.srt'));
+      return;
+    }
+    $('#rGo').onclick = async () => {
+      const prog = $('#rProg'), bar = prog.querySelector('span'), lbl = prog.querySelector('em');
+      prog.hidden = false; $('#rGo').disabled = true;
+      let lock = null;
+      try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+      try {
+        const blob = await renderLesson(player, PLATFORMS[platform], { onProgress: (f) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = `Gerando ${Math.round(f * 100)}%`; } });
+        const mediaId = 'render:' + lesson.id;
+        await db.putMedia(mediaId, blob);
+        lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform, at: Date.now(), dur: lessonDur(lesson) };
+        save();
+        toast('Vídeo final pronto!', 'ok');
+      } catch (e) { toast('Erro ao gerar: ' + e.message, 'err'); }
+      try { lock?.release(); } catch {}
+      drawOut();
+    };
+  }
+  drawOut();
 }
 
 // ======================= Cliente =======================
@@ -729,25 +968,13 @@ async function viewEditor(course, lessonId) {
   }
 
   async function importFiles(files) {
-    files = files.filter((f) => /^(video|audio)\//.test(f.type) || /\.(mp4|mov|m4v|webm|mkv|mp3|wav|m4a)$/i.test(f.name));
-    if (!files.length) return;
+    files = files.filter(isMedia);
+    if (!files.length) return toast('Escolha um arquivo de vídeo (MP4 ou MOV).', 'err');
     ed.snapshot();
     for (const f of files) {
       toast(`Importando ${f.name}…`);
-      const mediaId = uid('vid');
-      await db.putMedia(mediaId, f);
-      const duration = await new Promise((r) => {
-        const v = document.createElement('video');
-        v.preload = 'metadata';
-        v.onloadedmetadata = () => r(v.duration);
-        v.onerror = () => r(0);
-        v.src = URL.createObjectURL(f);
-      });
-      if (!duration || !isFinite(duration)) { toast(`Não foi possível ler ${f.name}. Converta para MP4 (H.264).`, 'err'); continue; }
-      const src = { id: uid('src'), mediaId, name: f.name, duration };
-      lesson.sources.push(src);
-      lesson.clips.push({ id: uid('clip'), srcId: src.id, in: 0, out: duration, zoom: 1 });
-      loadEnv(src, f);
+      try { const src = await importVideo(lesson, f); loadEnv(src, f); }
+      catch (e) { toast(e.message, 'err'); }
     }
     await player.setLesson(lesson, client);
     fitZoom();
@@ -756,16 +983,7 @@ async function viewEditor(course, lessonId) {
   }
 
   async function loadEnv(src, blob) {
-    if (envs.has(src.id)) return envs.get(src.id);
-    let env = await db.getMedia('env:' + src.id);
-    if (!env) {
-      try {
-        blob = blob || await db.getMedia(src.mediaId);
-        env = (await analyze(blob)).env;
-        await db.putMedia('env:' + src.id, env);
-      } catch (err) { console.warn(err); return null; }
-    }
-    envs.set(src.id, env);
+    const env = await getEnv(src, blob);
     drawTimeline();
     return env;
   }
@@ -775,20 +993,12 @@ async function viewEditor(course, lessonId) {
     const btn = $('#autoCut');
     btn.disabled = true; btn.textContent = 'Analisando áudio…';
     try {
-      const clips = [];
-      for (const s of lesson.sources) {
-        const env = await loadEnv(s);
-        if (!env) { toast(`Sem áudio legível em ${s.name}`, 'err'); continue; }
-        for (const r of speechRanges(env, client)) clips.push({ id: uid('clip'), srcId: s.id, in: r.in, out: Math.min(r.out, s.duration), zoom: 1 });
-      }
-      if (!clips.length) return toast('Nenhuma fala detectada — reduza o limiar (dB).', 'err');
-      if (client.autoZoom) clips.forEach((c, i) => (c.zoom = i % 2 ? 1.15 : 1));
       ed.snapshot();
-      const before = lessonDur(lesson);
-      lesson.clips = clips;
+      const removed = await autoCutLesson(lesson, client);
       ed.changed(); player.seek(0); fitZoom(); drawTimeline(); renderTab();
-      toast(`${clips.length} cortes · ${fmtLong(before - lessonDur(lesson))} de pausas removidas`, 'ok');
-    } finally { btn.disabled = false; btn.textContent = 'Gerar cortes secos'; }
+      toast(`${lesson.clips.length} cortes · ${fmtLong(removed)} de pausas removidas`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    finally { btn.disabled = false; btn.textContent = 'Gerar cortes secos'; }
   }
 
   // ----- Aba: Legendas -----
@@ -796,14 +1006,9 @@ async function viewEditor(course, lessonId) {
     const caps = timelineCaptions(lesson);
     body.innerHTML = `
       <div id="autoBox">
-        <h3>Transcrição automática</h3>
-        <p class="hint">Roda no próprio aparelho (Whisper). Na 1ª vez baixa o modelo (~80–250 MB). O vídeo não sai do aparelho.</p>
-        <label>Modelo<select id="model">
-          <option value="onnx-community/whisper-base_timestamped|1">Rápido — palavra a palavra</option>
-          <option value="onnx-community/whisper-small_timestamped|1">Preciso — palavra a palavra (mais lento)</option>
-          <option value="Xenova/whisper-small|0">Preciso — por frase</option>
-        </select></label>
-        <div class="btn-row"><button class="btn" id="transcribe">Transcrever aula</button></div>
+        <h3>Legenda automática</h3>
+        <p class="hint">O transcritor roda no próprio aparelho. Na primeira vez ele baixa ~100 MB e depois fica guardado.</p>
+        <div class="btn-row"><button class="btn" id="transcribe">Criar legenda automaticamente</button></div>
         <div class="progress" id="trProg" hidden><span></span><em></em></div>
       </div>
       <h3>Sincronizar roteiro</h3>
@@ -822,10 +1027,6 @@ async function viewEditor(course, lessonId) {
       <p class="hint">Corrija termos técnicos aqui. Toque no horário para ir até o trecho.</p>
       <div class="caps" id="capList">${editableCaps()}</div>`;
     bindForm(body, client, () => player.draw());
-    whisperAvailable().then((ok) => {
-      if (ok || !$('#autoBox')) return;
-      $('#autoBox').innerHTML = `<h3>Transcrição automática</h3><p class="hint">Nesta versão online a transcrição automática não está disponível (o navegador bloqueia o download do modelo). Use <b>Sincronizar roteiro</b> ou importe um .srt — por exemplo, a legenda automática gerada pelo YouTube, CapCut ou pela própria plataforma.</p>`;
-    });
     cap('sample').then((smp) => { if (smp && $('#aiRow')) { $('#aiRow').hidden = false; $('#aiFix').onclick = () => aiReview(smp); } });
     $('#transcribe') && ($('#transcribe').onclick = transcribe);
     $('#syncScript').onclick = () => syncScript($('#script').value);
@@ -870,36 +1071,14 @@ async function viewEditor(course, lessonId) {
   }
 
   async function aiReview(smp) {
-    const items = [];
-    for (const s of lesson.sources) phrases(lesson.words[s.id] || []).forEach((p) => items.push({ s, p, text: p.words.map((w) => w.w).join(' ') }));
-    if (!items.length) return toast('Ainda não há legenda para revisar.');
+    if (!Object.values(lesson.words).some((w) => w.length)) return toast('Ainda não há legenda para revisar.');
     const btn = $('#aiFix');
     btn.disabled = true;
     ed.snapshot();
-    let changed = 0;
     try {
-      for (let i = 0; i < items.length; i += 60) {
-        btn.textContent = `Revisando ${Math.min(i + 60, items.length)}/${items.length}…`;
-        const batch = items.slice(i, i + 60);
-        const out = await smp.json(`Você revisa legendas de uma aula em português do Brasil de ${client.name} (${client.specialty || 'medicina'}).
-Corrija apenas grafia de termos médicos, nomes de medicamentos, siglas, acentuação e pontuação. Não reescreva, não resuma, não mude o sentido.
-Palavras-chave do expert: ${client.keywords.join(', ') || 'nenhuma'}.
-Responda somente com um array JSON de ${batch.length} strings, na mesma ordem:
-${JSON.stringify(batch.map((b) => b.text))}`, { modelTier: 'quick' });
-        if (!Array.isArray(out) || out.length !== batch.length) continue;
-        // aplica de trás para frente para não deslocar índices
-        for (let j = batch.length - 1; j >= 0; j--) {
-          const { s, p, text } = batch[j];
-          const nt = String(out[j] || '').trim();
-          if (!nt || nt === text) continue;
-          const all = lesson.words[s.id], start = all.indexOf(p.words[0]);
-          if (start < 0) continue;
-          all.splice(start, p.words.length, ...spread(nt, p.s, p.e));
-          changed++;
-        }
-      }
+      const n = await aiReviewLesson(lesson, client, smp, ({ text }) => (btn.textContent = text));
       ed.changed(); renderTab();
-      toast(changed ? `${changed} frase(s) corrigida(s)` : 'Nenhuma correção necessária', 'ok');
+      toast(n ? `${n} frase(s) corrigida(s)` : 'Nenhuma correção necessária', 'ok');
     } catch (e) {
       toast('Revisão indisponível agora: ' + (e?.message || e?.code), 'err');
       btn.disabled = false; btn.textContent = 'Revisar termos médicos com IA';
@@ -944,48 +1123,20 @@ ${JSON.stringify(batch.map((b) => b.text))}`, { modelTier: 'quick' });
     });
   }
 
-  let worker;
   async function transcribe() {
     if (!lesson.sources.length) return toast('Importe um vídeo primeiro.');
-    const [model, wordsFlag] = $('#model').value.split('|');
     const prog = $('#trProg'), bar = prog.querySelector('span'), lbl = prog.querySelector('em');
     const btn = $('#transcribe');
     btn.disabled = true; prog.hidden = false;
-    worker = worker || new Worker(new URL('./whisper-worker.js', import.meta.url), { type: 'module' });
-    const run = (pcm, mdl, words) => new Promise((res, rej) => {
-      worker.onmessage = (e) => {
-        const m = e.data;
-        if (m.type === 'load') { bar.style.width = (m.progress || 0) + '%'; lbl.textContent = `Baixando modelo… ${Math.round(m.progress || 0)}%`; }
-        if (m.type === 'status') { bar.style.width = '100%'; bar.classList.add('pulse'); lbl.textContent = m.text; }
-        if (m.type === 'done') res(m);
-        if (m.type === 'error') rej(new Error(m.message));
-      };
-      worker.postMessage({ pcm, model: mdl, words }, [pcm.buffer]);
-    });
     try {
       ed.snapshot();
-      for (const s of lesson.sources) {
-        lbl.textContent = `Lendo áudio de ${s.name}…`;
-        const blob = await db.getMedia(s.mediaId);
-        let out;
-        try { out = await run(await decodePCM16k(blob), model, wordsFlag === '1'); }
-        catch (err) {
-          console.warn(err);
-          lbl.textContent = 'Modelo palavra a palavra indisponível, usando modelo por frase…';
-          out = await run(await decodePCM16k(blob), 'Xenova/whisper-base', false);
-          out.fallback = true;
-        }
-        const words = [];
-        for (const ch of out.chunks) {
-          const [a, b] = ch.timestamp || [0, 0];
-          const txt = (ch.text || '').trim();
-          if (!txt) continue;
-          if (wordsFlag === '1' && !out.fallback) words.push({ w: txt, s: a, e: b ?? a + 0.3 });
-          else words.push(...spread(txt, a, b ?? a + 2));
-        }
-        lesson.words[s.id] = words;
-      }
-      ed.changed(); toast('Transcrição concluída. Revise os termos técnicos.', 'ok');
+      await transcribeLesson(lesson, ({ text, progress, busy }) => {
+        lbl.textContent = text;
+        if (progress != null) bar.style.width = progress * 100 + '%';
+        bar.classList.toggle('pulse', !!busy);
+        if (busy) bar.style.width = '100%';
+      });
+      ed.changed(); toast('Legenda criada. Revise os termos técnicos.', 'ok');
       renderTab();
     } catch (err) {
       console.error(err);
