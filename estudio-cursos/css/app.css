@@ -434,3 +434,15 @@ p { text-wrap: pretty; }
   .transport .tool { white-space: nowrap; font-size: 13px; padding-inline: 4px; }
   .btn-row.split .btn-ghost, .btn-row.split button { font-size: 14px; }
 }
+/* Estúdio de Marketing (Notion ao vivo) */
+.mkt { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); display: grid; gap: 10px; }
+.mkt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.mkt-head h2 { margin: 0; font-size: 15px; }
+.mkt-pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; background: var(--surface); color: var(--ink-2); border: 1px solid var(--line); }
+.mkt-pill[data-mkt-state="ok"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.mkt-pill[data-mkt-state="ok"]::before { content: "● "; }
+.mkt-pill[data-mkt-state="need"], .mkt-pill[data-mkt-state="ask"], .mkt-pill[data-mkt-state="err"] { color: var(--danger); }
+.mkt-list { display: grid; gap: 8px; margin: 0; }
+.mkt-row { display: grid; grid-template-columns: minmax(0, 120px) minmax(0, 1fr); gap: 10px; font-size: 13px; }
+.mkt-row dt { color: var(--ink-3); } .mkt-row dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .mkt-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }

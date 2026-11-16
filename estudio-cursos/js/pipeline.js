@@ -1,6 +1,6 @@
 // Edição automática: importar → cortes secos → zoom → legenda → revisão por IA → destaques.
 import { db } from './db.js';
-import { uid, save } from './state.js';
+import { uid, save , briefOf } from './state.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, suggestKeywords, autoCards } from './captions.js';
 
@@ -133,7 +133,7 @@ export async function aiReviewLesson(lesson, client, smp, onStatus) {
     const out = await smp.json(`Você revisa legendas geradas automaticamente de uma aula em português do Brasil de ${client.name} (${client.specialty || 'medicina'}).
 Corrija palavras mal reconhecidas pelo contexto, a grafia de termos médicos, nomes de medicamentos, siglas, acentuação e pontuação.
 Não resuma, não acrescente informação e não mude o sentido. Mantenha cada frase no mesmo índice.
-Palavras-chave do expert: ${client.keywords.join(', ') || 'nenhuma'}.
+Palavras-chave do expert: ${client.keywords.join(', ') || 'nenhuma'}.${briefOf(client)}
 Responda somente com um array JSON de ${batch.length} strings, na mesma ordem:
 ${JSON.stringify(batch.map((b) => b.text))}`, { modelTier: 'quick' });
     if (!Array.isArray(out) || out.length !== batch.length) continue;

@@ -69,3 +69,15 @@ export function findLesson(course, lessonId) {
   for (const m of course.modules) for (const l of m.lessons) if (l.id === lessonId) return { module: m, lesson: l };
   return {};
 }
+
+// Resumo do perfil vindo do Estúdio de Marketing (Notion), para orientar a IA em legendas, descrições, Reels e chat.
+export function briefOf(c) {
+  const m = c?.mkt;
+  if (!m) return '';
+  const l = [];
+  if (m.tom) l.push(`Tom de voz: ${m.tom}`);
+  if (m.publico) l.push(`Público: ${m.publico}`);
+  if (m.proibidas) l.push(`Nunca use estes termos: ${m.proibidas}`);
+  if (m.notas) l.push(`Particularidades do cliente: ${m.notas}`);
+  return l.length ? `\nPerfil do cliente (Estúdio de Marketing):\n- ${l.join('\n- ')}\n` : '';
+}

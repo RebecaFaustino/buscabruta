@@ -1,5 +1,6 @@
 import { db } from './db.js';
-import { state, save, load, uid, newClient, newCourse, newModule, newLesson, getClient, getCourse, findLesson } from './state.js';
+import { state, save, load, uid, newClient, newCourse, newModule, newLesson, getClient, getCourse, findLesson, briefOf } from './state.js';
+import { startMarketing, refreshMarketing, onMkt, mkt, MKT_URL } from './marketing.js';
 import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
@@ -387,7 +388,7 @@ async function describeLesson(smp, client, course, lesson) {
   const text = timelineCaptions(lesson).map((c) => c.text).join(' ');
   const r = await smp(`Escreva a descrição de uma aula de curso online para a área de membros (Hotmart/Eduzz/Sympla).
 Expert: ${client.name}, ${client.specialty || 'médico(a)'}. Curso: ${course.title}. Aula: ${lesson.title}.
-Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.
+Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.${briefOf(client)}
 Formato: 1 frase de abertura + 3 tópicos curtos com "•" sobre o que o aluno vai aprender. Máximo 90 palavras. Responda só com o texto.
 Transcrição:
 ${text.slice(0, 12000)}`, { modelTier: 'quick' });
@@ -596,7 +597,7 @@ async function pickHighlight(lesson, client, smp) {
   if (smp) {
     try {
       const list = caps.map((c, i) => `${i}|${Math.round(c.s)}s|${c.text}`).join('\n').slice(0, 40000);
-      const r = await smp(`Você edita aulas de ${client.name} (${client.specialty || 'saúde'}). Escolha o MELHOR trecho contínuo para um Reels de divulgação: 30 a 60 segundos, que faça sentido sozinho, comece com uma frase que prenda a atenção e termine numa frase completa. Respeite as normas de publicidade médica do CFM (nada de promessa de cura ou resultado).
+      const r = await smp(`Você edita aulas de ${client.name} (${client.specialty || 'saúde'}). Escolha o MELHOR trecho contínuo para um Reels de divulgação: 30 a 60 segundos, que faça sentido sozinho, comece com uma frase que prenda a atenção e termine numa frase completa. Respeite as normas de publicidade médica do CFM (nada de promessa de cura ou resultado).${briefOf(client)}
 Frases da aula (índice|início|texto):
 ${list}
 Responda só com JSON: {"inicio": índice da primeira frase, "fim": índice da última frase, "titulo": "título curto e chamativo, até 6 palavras"}`, { modelTier: 'quick' });
@@ -653,7 +654,7 @@ async function makeChapters(lesson, smp, client) {
   if (smp) {
     try {
       const list = caps.map((c, i) => `${i}|${mmss(c.s)}|${c.text}`).join('\n').slice(0, 40000);
-      const r = await smp(`Divida esta aula em ${n} capítulos (no máximo 8) pelos assuntos. O primeiro começa na frase 0. Títulos curtos (até 6 palavras), claros para leigos, em português.
+      const r = await smp(`Divida esta aula em ${n} capítulos (no máximo 8) pelos assuntos. O primeiro começa na frase 0. Títulos curtos (até 6 palavras), claros para leigos, em português.${briefOf(client)}
 Frases (índice|horário|texto):
 ${list}
 Responda só com JSON: [{"frase": índice, "titulo": "..."}]`, { modelTier: 'quick' });
@@ -679,6 +680,32 @@ Responda só com JSON: [{"frase": índice, "titulo": "..."}]`, { modelTier: 'qui
     out.push(`${mmss(k === 0 ? 0 : c.s)} ${title}`);
   }
   return out.join('\n');
+}
+
+// ---- Estúdio de Marketing (Notion ao vivo) ----
+function mktPanel(c) {
+  const m = c.mkt;
+  const row = (k, v) => (v ? `<div class="mkt-row"><dt>${k}</dt><dd>${esc(v)}</dd></div>` : '');
+  return `<div class="mkt" id="mktBox">
+    <div class="mkt-head"><h2>Estúdio de Marketing</h2><span class="mkt-pill" data-mkt-state="${mkt.state}">${esc(mkt.text)}</span></div>
+    ${m ? `<dl class="mkt-list">${row('Tom de voz', m.tom)}${row('Público', m.publico)}${row('Nunca usar', m.proibidas)}${row('Particularidades', m.notas)}${row('Instagram', m.instagram)}</dl>
+      <p class="hint">Vem da tabela de clientes no Notion e é usado pela IA nas legendas, descrições, capítulos, Reels e no chat.${m.at ? ` Atualizado em ${new Date(m.at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}.` : ''}</p>`
+      : `<p class="hint">Este cliente ainda não está na tabela do Estúdio de Marketing. Peça ao ChatGPT: “preencha ${esc(c.name)} na tabela Clientes — estilos e particularidades do Notion”. As cores, o modelo e as particularidades entram aqui sozinhos.</p>`}
+    <div class="btn-row"><button class="ghost small" id="mktNow" type="button">Atualizar agora</button><a class="ghost btn-ghost small" href="${m?.url || MKT_URL}" target="_blank" rel="noopener">Abrir no Notion</a></div>
+  </div>`;
+}
+function bindMktPanel(c) {
+  const box = $('#mktBox'); if (!box) return;
+  const pill = $('.mkt-pill', box);
+  const off = onMkt((s) => { if (!document.body.contains(pill)) return off(); pill.textContent = s.text; pill.dataset.mktState = s.state; });
+  $('#mktNow', box).onclick = () => refreshMarketing(onMktChange);
+}
+function onMktChange(list) {
+  const names = list.map((x) => x.client.name);
+  toast(list.some((x) => x.isNew) && list.length === 1 ? `Novo cliente do Estúdio de Marketing: ${names[0]}` : `Perfil atualizado do Estúdio de Marketing: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`, 'ok');
+  // só redesenha telas de cadastro; no editor, só atualiza a lista e a prévia (sem perder a posição)
+  if (!busyWork() && (cur === '#/' || cur === '' || cur.startsWith('#/cliente/'))) route();
+  else { renderSidebar(); try { editor?.player?.draw(); } catch {} }
 }
 
 // ======================= Cliente =======================
@@ -712,6 +739,7 @@ function viewClient(c) {
         <p class="hint">Aparecem destacadas na legenda e em cartões animados ao lado do expert.</p>
         <div class="chips" id="kwChips"></div>
         <form id="kwForm" class="inline"><input id="kwInput" placeholder="Adicionar palavra-chave e Enter"><button>Adicionar</button></form>
+        ${mktPanel(c)}
       </section>
       <section class="panel">
         <h2>Estilo do vídeo</h2>
@@ -751,6 +779,7 @@ function viewClient(c) {
   };
   chipEditor($('#kwChips'), $('#kwForm'), c);
   $('#newCourse').onclick = () => { const k = newCourse(c.id); state.courses.push(k); save(); go('#/curso/' + k.id); };
+  bindMktPanel(c);
   $('#delClient').onclick = async () => {
     if (!(await ask(`Excluir ${c.name} e todos os seus cursos?`))) return;
     state.courses = state.courses.filter((k) => k.clientId !== c.id);
@@ -1527,7 +1556,7 @@ async function viewEditor(course, lessonId) {
         try {
           const r = await smp(`Escreva a descrição de uma aula de curso online para a área de membros (Hotmart/Eduzz/Sympla).
 Expert: ${client.name}, ${client.specialty || 'médico(a)'}. Curso: ${course.title}. Aula: ${lesson.title}.
-Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.
+Tom: profissional, acolhedor, claro para leigos, sem promessas de cura e respeitando as normas de publicidade médica do CFM.${briefOf(client)}
 Formato: 1 frase de abertura + 3 tópicos curtos com "•" sobre o que o aluno vai aprender. Máximo 90 palavras. Responda só com o texto.
 Transcrição:
 ${text.slice(0, 12000)}`, { modelTier: 'quick' });
@@ -1747,7 +1776,7 @@ function bindChat(root, { client, lesson, course, player, refresh }) {
     const bubble = add('bot', 'Pensando…');
     applied.length = 0;
     history.push({ role: 'user', content: text });
-    const sys = `Você é o assistente de edição do Estúdio de Cursos. Fale português do Brasil, curto e simpático. A usuária edita aulas de ${client.name} (${client.specialty || 'saúde'}), aula "${lesson.title}".
+    const sys = `Você é o assistente de edição do Estúdio de Cursos. Fale português do Brasil, curto e simpático. A usuária edita aulas de ${client.name} (${client.specialty || 'saúde'}), aula "${lesson.title}".${briefOf(client)}
 Use as ferramentas para aplicar os ajustes pedidos (consulte ver_estado quando precisar). Depois responda em 1-2 frases dizendo o que mudou. Se algo não for possível pelas ferramentas, diga com clareza.`;
     try {
       const r = await smp([{ role: 'user', content: sys }, { role: 'assistant', content: 'Entendido.' }, ...history], {
@@ -1969,4 +1998,5 @@ const busy = () => editor?.player?.playing || document.querySelector('#rProg:not
     cloudUsage().then((u) => u && console.info('Nuvem:', u));
 
   } else setCloudStatus({ state: 'off', text: 'Só neste aparelho' });
+  startMarketing(onMktChange).catch((e) => console.warn('Estúdio de Marketing', e));
 })();
