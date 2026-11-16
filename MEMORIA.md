@@ -17,3 +17,4 @@ Formato de cada linha: data — quem — o que foi feito ou decidido.
 - 2026-11 — Claude — Revisão em 3 tamanhos de tela (iPhone SE, iPhone 13, computador): nada vaza da tela; título da aula com rótulo; capítulos sem IA usam as palavras-chave do cliente.
 - 2026-11 — Claude — Criada página no Notion "Memória compartilhada — Claude + ChatGPT" (as duas IAs têm conector Notion).
 - 2026-11 — Rebeca — ChatGPT conectado ao Notion; memória comum ativa.
+- 2026-11 — Claude — v13: barra de progresso fiel, plurais corretos, botões do editor em grade no celular, abas com indicação de rolagem, régua da linha do tempo sem número cortado.

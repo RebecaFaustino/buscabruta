@@ -17,6 +17,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60), d = Math.floor((t % 1) * 10); return `${m}:${String(s).padStart(2, '0')}.${d}`; };
 const fmtLong = (t) => { t = Math.round(t || 0); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return h ? `${h}h${String(m).padStart(2, '0')}` : m ? `${m}min ${String(s).padStart(2, '0')}s` : `${s}s`; };
 const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
+const pl = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 const slug = (s) => norm(s).replace(/\s+/g, '-').slice(0, 60) || 'aula';
 const lessonDur = (l) => l.clips.reduce((a, c) => a + c.out - c.in, 0);
 const rawDur = (l) => l.sources.reduce((a, s) => a + (s.duration || 0), 0);
@@ -208,7 +209,7 @@ function viewHome() {
           <canvas class="client-prev" width="640" height="360" data-cprev="${c.id}"></canvas>
           <h3>${esc(c.name)}</h3>
           <p>${esc(c.specialty || '—')} ${c.crm ? '· ' + esc(c.crm) : ''}</p>
-          <p class="muted">${cs.length} curso(s)</p>
+          <p class="muted">${pl(cs.length, 'curso', 'cursos')}</p>
         </a>`;
       }).join('')}
       <button class="card add-card" id="homeNewClient">+ Novo cliente</button>
@@ -322,7 +323,7 @@ async function runAuto(course, lesson, client, file) {
     li.className = st;
     li.querySelector('small').textContent = note;
   };
-  const bar = (f, txt) => { const b = $('#aBar'), l = $('#aLbl'); if (!b) return; if (f != null) b.style.width = Math.round(f * 100) + '%'; b.classList.toggle('pulse', f == null); if (f == null) b.style.width = '100%'; if (txt) l.textContent = txt; };
+  const bar = (f, txt) => { const b = $('#aBar'), l = $('#aLbl'); if (!b) return; if (f != null) b.style.width = Math.round(f * 100) + '%'; b.classList.toggle('pulse', f == null); if (f == null) b.style.width = '100%'; if (txt) l.textContent = txt.replace(/\s*[…\.]*\s*\d+\s*%\s*$/, '…'); if (f != null) l.textContent = l.textContent.replace(/\s+·\s+\d+%$/, '') + ` · ${Math.round(f * 100)}%`; };
   const smp = await cap('sample');
   const warn = [];
   try {
@@ -351,14 +352,14 @@ async function runAuto(course, lesson, client, file) {
       mark('review', 'run');
       try {
         const n = await aiReviewLesson(lesson, client, smp, ({ text, progress }) => bar(0.75 + (progress || 0) * 0.15, text));
-        mark('review', 'ok', n ? `${n} frase(s) corrigida(s)` : 'nada a corrigir');
+        mark('review', 'ok', n ? `${pl(n, 'frase corrigida', 'frases corrigidas')}` : 'nada a corrigir');
       } catch (e) { mark('review', 'skip', 'IA indisponível agora'); }
     } else mark('review', 'skip', hasWords ? 'disponível só na versão online' : 'sem legenda');
 
     mark('keys', 'run'); bar(0.92, 'Criando destaques…');
     if (hasWords) {
       const n = keywordsAndCards(lesson, client);
-      mark('keys', 'ok', n ? `${n} destaque(s): ${client.keywords.slice(0, 4).join(', ')}` : 'nenhuma palavra-chave falada');
+      mark('keys', 'ok', n ? `${pl(n, 'destaque', 'destaques')}: ${client.keywords.slice(0, 4).join(', ')}` : 'nenhuma palavra-chave falada');
     } else mark('keys', 'skip', 'precisa da legenda');
 
     if (smp && hasWords) {
@@ -421,7 +422,7 @@ async function viewReady(course, lessonId, fresh = false) {
           <div class="sfx-line"><label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros</label><button class="ghost small" id="rHear" type="button">▶ Ouvir</button></div>
         </div>
         <div id="rOut"></div>
-        <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">✂ Ajustar cortes e legenda</a><a class="ghost btn-ghost" href="#/novo">+ Editar outro vídeo</a></div>
+        <div class="btn-row split"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">✂ Ajustar cortes e legenda</a><a class="ghost btn-ghost" href="#/novo">+ Editar outro vídeo</a></div>
         <details class="grp" open><summary><b>💬 Pedir ajuste ao Claude</b><small>escreva o que quer mudar</small></summary><div class="grp-body">${chatHTML()}</div></details>
         <details class="grp"><summary><b>🎨 Estilo do vídeo</b><small>modelos, cores, legenda</small></summary><div class="grp-body"><div id="rStyle" class="style-panel"></div></div></details>
         <details class="grp"><summary><b>🎵 Trilha sonora</b><small>${esc(TRACKS[client.music || 'nenhuma']?.name || '')}</small></summary><div class="grp-body" id="rMusic">${musicBlock(client)}</div></details>
@@ -728,7 +729,7 @@ function viewClient(c) {
     <h2 class="section-title">Cursos</h2>
     <section class="grid">
       ${courses.map((k) => `<a class="card" href="#/curso/${k.id}"><h3>${esc(k.title)}</h3>
-        <p class="muted">${k.modules.length} módulo(s) · ${k.modules.reduce((a, m) => a + m.lessons.length, 0)} aula(s)</p></a>`).join('')}
+        <p class="muted">${pl(k.modules.length, 'módulo', 'módulos')} · ${pl(k.modules.reduce((a, m) => a + m.lessons.length, 0), 'aula', 'aulas')}</p></a>`).join('')}
       <button class="card add-card" id="newCourse">+ Novo curso</button>
     </section>`;
 
@@ -1088,7 +1089,8 @@ async function viewEditor(course, lessonId) {
     for (let t = 0; t <= d + step; t += step) {
       const x = t * ed.pps;
       g.fillRect(x, 14, 1, 8);
-      g.fillText(fmtLong(t).replace('min ', ':').replace('s', ''), x + 3, 2);
+      const lbl = fmtLong(t).replace('min ', ':').replace('s', ''), lw = g.measureText(lbl).width;
+      g.fillText(lbl, x + 3 + lw > W ? x - 3 - lw : x + 3, 2);
     }
     // clipes
     const y = ROW.ruler;
@@ -1191,7 +1193,8 @@ async function viewEditor(course, lessonId) {
 
   // ---- abas ----
   ed.tab = 'cortes';
-  view.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { ed.tab = b.dataset.tab; renderTab(); }));
+  view.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { ed.tab = b.dataset.tab; renderTab(); b.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' }); }));
+  { const nav = view.querySelector('.tabs'); const end = () => nav.classList.toggle('at-end', nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 4); nav.addEventListener('scroll', end, { passive: true }); requestAnimationFrame(end); }
   const body = $('#tabBody');
   function renderTab() {
     view.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === ed.tab));
@@ -1221,12 +1224,12 @@ async function viewEditor(course, lessonId) {
         <button class="ghost" id="resetCuts">Restaurar original</button>
       </div>
       <h3>Ritmo</h3>
-      <div class="btn-row">
+      <div class="btn-row split">
         <button class="ghost" id="zoomAll">Zoom dinâmico em todos</button>
         <button class="ghost" id="zoomNone">Remover zooms</button>
         <button class="ghost" id="dropShort">Remover clipes &lt; 0,4 s</button>
       </div>
-      <p class="hint">${lesson.clips.length} clipe(s) na linha do tempo.</p>`;
+      <p class="hint">${pl(lesson.clips.length, 'clipe', 'clipes')} na linha do tempo.</p>`;
     bindForm(body, client);
     const inp = $('#vidInput'), drop = $('#drop');
     inp.onchange = () => importFiles([...inp.files]);
@@ -1373,7 +1376,7 @@ async function viewEditor(course, lessonId) {
     try {
       const n = await aiReviewLesson(lesson, client, smp, ({ text }) => (btn.textContent = text));
       ed.changed(); renderTab();
-      toast(n ? `${n} frase(s) corrigida(s)` : 'Nenhuma correção necessária', 'ok');
+      toast(n ? `${pl(n, 'frase corrigida', 'frases corrigidas')}` : 'Nenhuma correção necessária', 'ok');
     } catch (e) {
       toast('Revisão indisponível agora: ' + (e?.message || e?.code), 'err');
       btn.disabled = false; btn.textContent = 'Revisar termos médicos com IA';
@@ -1725,7 +1728,7 @@ function bindChat(root, { client, lesson, course, player, refresh }) {
       execute: (i) => { for (const w of i.adicionar || []) if (!client.keywords.some((k) => norm(k) === norm(w))) client.keywords.push(String(w)); const rm = (i.remover || []).map(norm); client.keywords = client.keywords.filter((k) => !rm.includes(norm(k))); const n = keywordsAndCards(lesson, client); return touch(`${n} destaques · palavras: ${client.keywords.join(', ')}`); } },
     { name: 'corrigir_legenda', description: 'Troca uma palavra ou trecho errado da legenda por outro, em toda a aula.',
       inputSchema: { type: 'object', properties: { de: { type: 'string' }, para: { type: 'string' } }, required: ['de', 'para'] },
-      execute: ({ de, para }) => { let n = 0; const re = new RegExp(String(de).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); for (const [id, ws] of Object.entries(lesson.words)) { const ps = phrases(ws); for (let j = ps.length - 1; j >= 0; j--) { const p = ps[j], t = p.words.map((w) => w.w).join(' '); if (!re.test(t)) continue; re.lastIndex = 0; const all = lesson.words[id], st = all.indexOf(p.words[0]); all.splice(st, p.words.length, ...spread(t.replace(re, String(para)), p.s, p.e)); n++; } } return touch(`${n} trecho(s) corrigido(s)`); } },
+      execute: ({ de, para }) => { let n = 0; const re = new RegExp(String(de).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); for (const [id, ws] of Object.entries(lesson.words)) { const ps = phrases(ws); for (let j = ps.length - 1; j >= 0; j--) { const p = ps[j], t = p.words.map((w) => w.w).join(' '); if (!re.test(t)) continue; re.lastIndex = 0; const all = lesson.words[id], st = all.indexOf(p.words[0]); all.splice(st, p.words.length, ...spread(t.replace(re, String(para)), p.s, p.e)); n++; } } return touch(`${pl(n, 'trecho corrigido', 'trechos corrigidos')}`); } },
     { name: 'ajustar_cortes', description: 'Refaz os cortes secos. ritmo: "rapido" (pausas curtas), "dinamico" (padrão) ou "natural" (mantém respiros).',
       inputSchema: { type: 'object', properties: { ritmo: { type: 'string', enum: ['rapido', 'dinamico', 'natural'] } }, required: ['ritmo'] },
       execute: async ({ ritmo }) => { Object.assign(client, { rapido: { minSilence: 0.3, padding: 0.05 }, dinamico: { minSilence: 0.45, padding: 0.08 }, natural: { minSilence: 0.7, padding: 0.15 } }[ritmo] || {}); const removed = await autoCutLesson(lesson, client); player.invalidate(); await player.seek(0); return touch(`${lesson.clips.length} cortes · ${fmtLong(removed)} removidos`); } },

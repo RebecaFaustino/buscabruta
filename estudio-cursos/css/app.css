@@ -417,3 +417,20 @@ pre.chapters { white-space: pre-wrap; font: 13px/1.6 "JetBrains Mono", ui-monosp
 .form input, .form select, .form textarea, .style-panel select, .style-panel input:not([type=color]):not([type=checkbox]):not([type=radio]) { max-width: 100%; }
 .logo-row input[type=file] { min-width: 0; max-width: 100%; }
 .row3 > *, .row2 > * { min-width: 0; } .row3 input[type=color] { width: 100%; }
+/* refinamentos */
+.btn-row.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.btn-row.split .btn-ghost { justify-content: center; text-align: center; min-height: 44px; }
+h1, h2, .hero h1, .hero h2 { text-wrap: balance; }
+p { text-wrap: pretty; }
+.tabs { scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs.at-end { -webkit-mask-image: none; mask-image: none; }
+@media (max-width: 700px) {
+  .transport { flex-wrap: wrap; }
+  .transport .sep { flex-basis: 100%; height: 0; }
+  .transport .tool { flex: 1 1 calc(25% - 8px); justify-content: center; min-height: 44px; padding-inline: 6px; }
+}
+@media (max-width: 700px) {
+  .transport .tool { white-space: nowrap; font-size: 13px; padding-inline: 4px; }
+  .btn-row.split .btn-ghost, .btn-row.split button { font-size: 14px; }
+}
