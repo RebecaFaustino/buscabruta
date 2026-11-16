@@ -6,7 +6,7 @@ import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
 const urlCache = new Map(); // mediaId -> objectURL
 export async function mediaURL(mediaId) {
   if (!urlCache.has(mediaId)) {
-    const b = await db.getMedia(mediaId);
+    const b = await db.getBlob(mediaId);
     if (!b) return null;
     urlCache.set(mediaId, URL.createObjectURL(b));
   }

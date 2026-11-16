@@ -240,10 +240,11 @@ def build_ass(path, W, H, words, phrases, opt, total):
 
     # Cartões de palavra-chave do lado oposto ao expert
     lado = 'direita' if opt.lado == 'esquerda' else 'esquerda'
-    last = -99
-    for w in words:
-        if is_kw(w['w'], kws) and w['s'] - last > opt.dur_cartao + 1.5 and w['s'] > (3.4 if opt.abertura else 0):
-            last = w['s']
+    last, usos = -99, {}
+    for w in words:  # no máximo 1 destaque a cada 20 s e até 3 aparições por palavra
+        k = norm(w['w'])
+        if is_kw(w['w'], kws) and w['s'] - last >= 20 and usos.get(k, 0) < 3 and w['s'] > (3.4 if opt.abertura else 0):
+            last = w['s']; usos[k] = usos.get(k, 0) + 1
             a, b = w['s'], min(total, w['s'] + opt.dur_cartao)
             txt = esc_ass(re.sub(r'[^\w\s-]', '', w['w']).upper())
             if vertical:

@@ -1,7 +1,52 @@
 // Análise de áudio: envelope (para forma de onda), detecção de silêncio e PCM 16 kHz para transcrição.
+import { Input, ALL_FORMATS, BlobSource, AudioBufferSink } from '../vendor/mediabunny.min.mjs';
+
 const ENV_RATE = 100; // pontos por segundo no envelope
 
-export async function decodePCM16k(blob) {
+// Último áudio decodificado (a análise e a transcrição usam o mesmo, sem decodificar duas vezes).
+let lastPCM = { blob: null, pcm: null };
+
+export async function decodePCM16k(blob, onProgress) {
+  if (lastPCM.blob === blob && lastPCM.pcm) return lastPCM.pcm.slice();
+  let pcm;
+  try { pcm = await decodeStreaming(blob, onProgress); }
+  catch (e) { console.warn('Leitura em partes indisponível, usando o método completo:', e?.message); pcm = await decodeWhole(blob); }
+  lastPCM = { blob, pcm };
+  return pcm.slice();
+}
+
+// Lê só a trilha de áudio, aos poucos (WebCodecs): não carrega o vídeo inteiro na memória.
+async function decodeStreaming(blob, onProgress) {
+  if (typeof AudioDecoder === 'undefined') throw new Error('sem WebCodecs');
+  const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+  const track = await input.getPrimaryAudioTrack();
+  if (!track) throw new Error('sem trilha de áudio');
+  if (!(await track.canDecode())) throw new Error('codec de áudio não suportado');
+  const dur = await track.computeDuration();
+  let out = new Float32Array(Math.ceil((dur + 2) * 16000));
+  let n = 0, lastP = 0;
+  for await (const { buffer, timestamp } of new AudioBufferSink(track).buffers()) {
+    const sr = buffer.sampleRate, ch = buffer.numberOfChannels, len = buffer.length;
+    const chans = Array.from({ length: ch }, (_, c) => buffer.getChannelData(c));
+    const ratio = sr / 16000;
+    const start = Math.max(0, Math.round(timestamp * 16000));
+    const outLen = Math.floor(len / ratio);
+    if (start + outLen > out.length) { const g = new Float32Array(Math.ceil((start + outLen) * 1.2)); g.set(out); out = g; }
+    for (let i = 0; i < outLen; i++) {
+      const a = Math.floor(i * ratio), b = Math.max(a + 1, Math.min(len, Math.floor((i + 1) * ratio)));
+      let s = 0;
+      for (let c = 0; c < ch; c++) { const d = chans[c]; for (let j = a; j < b; j++) s += d[j]; }
+      out[start + i] = s / ((b - a) * ch);
+    }
+    n = Math.max(n, start + outLen);
+    if (onProgress && timestamp - lastP > 5) { lastP = timestamp; onProgress(Math.min(1, timestamp / dur)); }
+  }
+  input.dispose?.();
+  if (!n) throw new Error('áudio vazio');
+  return out.slice(0, n);
+}
+
+async function decodeWhole(blob) {
   const buf = await blob.arrayBuffer();
   const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 16000, 16000);
   const audio = await ctx.decodeAudioData(buf);

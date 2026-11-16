@@ -91,14 +91,18 @@ export function suggestKeywords(lesson, client, limit = 12) {
 
 // Gera cartões de destaque automaticamente quando a palavra-chave é falada.
 export function autoCards(lesson, client, dur = 2.8) {
+  // No máximo 1 destaque a cada 20 s e até 3 aparições por palavra: destaque demais vira ruído.
   const cards = [];
+  const uses = new Map();
   for (const [srcId, ws] of Object.entries(lesson.words)) {
     let lastT = -99;
     for (const w of ws) {
-      if (isKeyword(w.w, client) && w.s - lastT > dur + 1.5) {
-        cards.push({ id: 'card_' + Math.random().toString(36).slice(2, 9), srcId, t: w.s, dur, text: w.w.replace(/[^\p{L}\p{N}\s-]/gu, ''), sub: '' });
-        lastT = w.s;
-      }
+      if (!isKeyword(w.w, client) || w.s - lastT < 20) continue;
+      const k = norm(w.w);
+      if ((uses.get(k) || 0) >= 3) continue;
+      uses.set(k, (uses.get(k) || 0) + 1);
+      cards.push({ id: 'card_' + Math.random().toString(36).slice(2, 9), srcId, t: w.s, dur, text: w.w.replace(/[^\p{L}\p{N}\s-]/gu, ''), sub: '' });
+      lastT = w.s;
     }
   }
   return cards;

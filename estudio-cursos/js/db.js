@@ -29,7 +29,24 @@ async function tx(store, mode, fn) {
   });
 }
 
+// Arquivos escolhidos nesta sessão ficam na memória (o objeto File, sem cópia) enquanto a cópia
+// permanente é gravada no IndexedDB em segundo plano — vídeos de 1 GB+ levam minutos para gravar.
+const live = new Map();
+const pending = new Map();
+
 export const db = {
+  keep(id, blob) {
+    live.set(id, blob);
+    const p = tx('media', 'readwrite', (s) => s.put(blob, id)).then(() => true, (e) => { console.warn('Não foi possível guardar o vídeo neste aparelho', e); return false; });
+    pending.set(id, p);
+    p.finally(() => pending.delete(id));
+    return p;
+  },
+  async getBlob(id) {
+    return live.get(id) || (await tx('media', 'readonly', (s) => s.get(id)).catch(() => null));
+  },
+  isSaving: () => pending.size > 0,
+  waitSaved: () => Promise.all(pending.values()),
   get: (k) => tx('kv', 'readonly', (s) => s.get(k)),
   set: (k, v) => tx('kv', 'readwrite', (s) => s.put(v, k)),
   putMedia: (id, blob) => tx('media', 'readwrite', (s) => s.put(blob, id)),

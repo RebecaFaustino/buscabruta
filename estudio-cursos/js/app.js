@@ -374,7 +374,7 @@ async function viewReady(course, lessonId, fresh = false) {
          <p class="hint">Leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada.</p>
          <div class="progress" id="rProg" hidden><span></span><em></em></div>`;
     if (same) {
-      $('#rDl').onclick = async () => download(await db.getMedia(r.mediaId), `${base}.${r.ext}`);
+      $('#rDl').onclick = async () => download(await db.getBlob(r.mediaId), `${base}.${r.ext}`);
       $('#rSrt') && ($('#rSrt').onclick = () => download(new Blob([srt(timelineCaptions(lesson))], { type: 'text/plain' }), base + '.srt'));
       return;
     }
@@ -386,7 +386,7 @@ async function viewReady(course, lessonId, fresh = false) {
       try {
         const blob = await renderLesson(player, PLATFORMS[platform], { onProgress: (f) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = `Gerando ${Math.round(f * 100)}%`; } });
         const mediaId = 'render:' + lesson.id;
-        await db.putMedia(mediaId, blob);
+        db.keep(mediaId, blob);
         lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform, at: Date.now(), dur: lessonDur(lesson) };
         save();
         toast('Vídeo final pronto!', 'ok');
@@ -1257,7 +1257,7 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
       try {
         const blob = await renderLesson(player, p, { signal: ctrl.ac.signal, onProgress: (f) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = `Renderizando ${Math.round(f * 100)}%`; } });
         const mediaId = 'render:' + lesson.id;
-        await db.putMedia(mediaId, blob);
+        db.keep(mediaId, blob);
         lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform: ed.platform || client.platform, at: Date.now(), dur: lessonDur(lesson) };
         save();
         toast('Aula renderizada!', 'ok');
@@ -1278,7 +1278,7 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
     const r = lesson.render;
     if (!r || !$('#dlVid')) return;
     const base = `${String(mi + 1).padStart(2, '0')}-${String(li + 1).padStart(2, '0')}-${slug(lesson.title)}`;
-    $('#dlVid').onclick = async () => download(await db.getMedia(r.mediaId), `${base}.${r.ext}`);
+    $('#dlVid').onclick = async () => download(await db.getBlob(r.mediaId), `${base}.${r.ext}`);
     $('#dlSrt').onclick = () => download(new Blob([srt(timelineCaptions(lesson))], { type: 'text/plain' }), base + '.srt');
   }
 
@@ -1377,7 +1377,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
           onProgress: (f) => { bar.style.width = ((n + f) / todo.length * 100).toFixed(1) + '%'; lbl.textContent = `Aula ${n + 1}/${todo.length}: ${l.title} — ${Math.round(f * 100)}%`; },
         });
         const mediaId = 'render:' + l.id;
-        await db.putMedia(mediaId, blob);
+        db.keep(mediaId, blob);
         l.render = { mediaId, size: blob.size, ext: extOf(blob), platform, at: Date.now(), dur: lessonDur(l) };
         save();
       }
@@ -1398,7 +1398,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
     for (const { m, mi, l, li } of all) {
       const dir = root.folder(`${String(mi + 1).padStart(2, '0')}-${slug(m.title)}`);
       const base = `${String(li + 1).padStart(2, '0')}-${slug(l.title)}`;
-      if (l.render) dir.file(`${base}.${l.render.ext}`, await db.getMedia(l.render.mediaId), { binary: true, compression: 'STORE' });
+      if (l.render) dir.file(`${base}.${l.render.ext}`, await db.getBlob(l.render.mediaId), { binary: true, compression: 'STORE' });
       const caps = timelineCaptions(l);
       if (caps.length) dir.file(`${base}.srt`, srt(caps));
       if (l.description) dir.file(`${base}-descricao.txt`, l.description);
@@ -1437,6 +1437,10 @@ function installHint() {
   $('#copyLink').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Link copiado', 'ok'), () => toast('Selecione o link abaixo e copie.'));
   $('#installOk').onclick = () => { try { localStorage.setItem('ec-install-ok', '1'); } catch {} d.remove(); };
 }
+
+window.addEventListener('beforeunload', (e) => {
+  if (db.isSaving()) { e.preventDefault(); e.returnValue = 'O vídeo ainda está sendo guardado neste aparelho.'; }
+});
 
 (async () => {
   installHint();

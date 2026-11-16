@@ -31,7 +31,7 @@ export async function importVideo(lesson, file) {
   const duration = await videoDuration(file);
   if (!duration || !isFinite(duration)) throw new Error(`Não foi possível ler “${file.name}”. Use um vídeo MP4 ou MOV.`);
   const mediaId = uid('vid');
-  await db.putMedia(mediaId, file);
+  db.keep(mediaId, file); // grava em segundo plano
   const src = { id: uid('src'), mediaId, name: file.name, duration };
   lesson.sources.push(src);
   lesson.clips.push({ id: uid('clip'), srcId: src.id, in: 0, out: duration, zoom: 1 });
@@ -44,7 +44,7 @@ export async function getEnv(src, blob) {
   let env = await db.getMedia('env:' + src.id).catch(() => null);
   if (!env) {
     try {
-      blob = blob || await db.getMedia(src.mediaId);
+      blob = blob || await db.getBlob(src.mediaId);
       env = (await analyze(blob)).env;
       await db.putMedia('env:' + src.id, env).catch(() => {});
     } catch (err) { console.warn(err); return null; }
@@ -98,8 +98,8 @@ function cleanText(t) {
 export async function transcribeLesson(lesson, onStatus) {
   for (const s of lesson.sources) {
     onStatus?.({ text: 'Lendo o áudio…' });
-    const blob = await db.getMedia(s.mediaId);
-    const pcm = await decodePCM16k(blob);
+    const blob = await db.getBlob(s.mediaId);
+    const pcm = await decodePCM16k(blob, (f) => onStatus?.({ text: `Lendo o áudio… ${Math.round(f * 100)}%`, progress: f * 0.1 }));
     const total = pcm.length / 16000;
     const out = await whisper(pcm, (m) => {
       if (m.type === 'load') onStatus?.({ text: `Preparando o transcritor… ${Math.round(m.progress || 0)}%`, progress: (m.progress || 0) / 100 });
