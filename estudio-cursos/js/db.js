@@ -43,8 +43,14 @@ export const db = {
     return p;
   },
   async getBlob(id) {
-    return live.get(id) || (await tx('media', 'readonly', (s) => s.get(id)).catch(() => null));
+    const b = live.get(id) || (await tx('media', 'readonly', (s) => s.get(id)).catch(() => null));
+    if (b || !db.remote) return b;
+    // não está neste aparelho: busca na nuvem e guarda uma cópia local
+    const r = await db.remote(id).catch((e) => { console.warn(e); return null; });
+    if (r) db.keep(id, r);
+    return r;
   },
+  remote: null,
   isSaving: () => pending.size > 0,
   waitSaved: () => Promise.all(pending.values()),
   get: (k) => tx('kv', 'readonly', (s) => s.get(k)),

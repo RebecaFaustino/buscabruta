@@ -7,6 +7,7 @@ import { Player } from './player.js';
 import { SFX, playSfx } from './sfx.js';
 import { TEMPLATES, PALETTES, CAPTION_MODES, CARD_VARIANTS, resolveStyle } from './styles.js';
 import { renderLesson, extOf, pickMime } from './render.js';
+import { cloud, cloudInit, cloudPull, cloudPush, cloudWatch, cloudUploadMedia, cloudFetchMedia, cloudUsage } from './cloud.js';
 import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards } from './pipeline.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -261,6 +262,7 @@ async function runAuto(course, lesson, client, file) {
   try {
     mark('import', 'run'); bar(0.02, 'Recebendo o vídeo…');
     const src = await importVideo(lesson, file);
+    window.dispatchEvent(new Event('ec-media-added'));
     mark('import', 'ok', `${fmtLong(src.duration)} de gravação`);
 
     mark('cut', 'run'); bar(0.08, 'Analisando o áudio…');
@@ -474,6 +476,7 @@ function viewClient(c) {
     await db.putMedia(id, f);
     c.logoMediaId = id;
     save();
+    window.dispatchEvent(new Event('ec-media-added'));
     showLogo(c);
   };
   chipEditor($('#kwChips'), $('#kwForm'), c);
@@ -1000,6 +1003,7 @@ async function viewEditor(course, lessonId) {
     await player.setLesson(lesson, client);
     fitZoom();
     ed.changed(); renderTab();
+    window.dispatchEvent(new Event('ec-media-added'));
     toast('Vídeo importado. Próximo passo: “Gerar cortes secos”.', 'ok');
   }
 
@@ -1602,6 +1606,45 @@ window.addEventListener('beforeunload', (e) => {
   if (db.isSaving()) { e.preventDefault(); e.returnValue = 'O vídeo ainda está sendo guardado neste aparelho.'; }
 });
 
+// ---------- nuvem: vídeos originais ----------
+let mediaSyncing = false;
+async function syncMedia() {
+  if (!cloud.on() || mediaSyncing) return;
+  mediaSyncing = true;
+  try {
+    const ids = new Set();
+    for (const c of state.clients) if (c.logoMediaId) ids.add(c.logoMediaId);
+    for (const k of state.courses) for (const m of k.modules) for (const l of m.lessons) for (const src of l.sources) ids.add(src.mediaId);
+    for (const id of ids) {
+      if (state.media[id]) continue;
+      const blob = await db.getBlob(id);
+      if (!blob) continue;
+      const mbs = (blob.size / 1048576).toFixed(0);
+      cloud.status = { state: 'saving', text: `Enviando vídeo (${mbs} MB) para a nuvem…` };
+      setCloudStatus(cloud.status);
+      try {
+        const info = await cloudUploadMedia(id, blob, (f) => setCloudStatus({ state: 'saving', text: `Enviando vídeo (${mbs} MB) para a nuvem… ${Math.round(f * 100)}%` }));
+        if (info) { state.media[id] = info; save(); }
+      } catch (e) {
+        console.warn(e);
+        setCloudStatus({ state: 'err', text: e?.code === 'too_large' || e?.code === 'quota_exceeded' ? 'Espaço da nuvem cheio: o vídeo ficou só neste aparelho' : 'Vídeo não enviado à nuvem (tentaremos de novo)' });
+        break;
+      }
+    }
+    if (cloud.status.state === 'saving') setCloudStatus({ state: 'ok', text: 'Salvo na nuvem' });
+  } finally { mediaSyncing = false; }
+}
+window.addEventListener('ec-media-added', () => setTimeout(syncMedia, 500));
+
+function setCloudStatus(st) {
+  const time = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const icon = { ok: '☁︎', saving: '⟳', err: '!', off: '◌' }[st.state] || '☁︎';
+  const txt = st.state === 'ok' ? `${st.text} · ${time}` : st.text;
+  for (const el of document.querySelectorAll('[data-cloud]')) { el.dataset.state = st.state; el.textContent = `${icon} ${txt}`; el.title = txt; }
+}
+
+const busy = () => editor?.player?.playing || document.querySelector('#rProg:not([hidden]), #aProg:not([hidden]), .steps .run');
+
 (async () => {
   installHint();
   await load();
@@ -1609,6 +1652,21 @@ window.addEventListener('beforeunload', (e) => {
   route();
   // fontes dos modelos (Inter Tight, JetBrains Mono, Playfair, Anton): redesenha quando chegarem
   Promise.all(['Inter Tight', 'JetBrains Mono', 'Playfair Display', 'Anton', 'Inter'].map((f) => document.fonts.load(`700 40px "${f}"`).catch(() => {})))
-    .then(() => { try { editor?.player?.draw(); document.querySelectorAll('.style-panel').forEach((el) => el.dispatchEvent(new Event('fonts'))); } catch {} });
+    .then(() => { try { editor?.player?.draw(); } catch {} });
   if (state.storageError) toast('Este navegador não permite salvar dados (janela anônima?). O trabalho será perdido ao fechar.', 'err');
+
+  // Nuvem ao vivo (quando aberto no claude.ai)
+  cloud.onStatus(setCloudStatus);
+  if (await cloudInit()) {
+    db.remote = (id) => cloudFetchMedia(state.media[id]);
+    if (await cloudPull(state)) { save({ touch: false }); route(); toast('Seus projetos foram carregados da nuvem', 'ok'); }
+    else if (state.updatedAt) cloudPush(state);
+    cloudWatch(async () => {
+      if (busy()) { toast('Há mudanças feitas em outro aparelho. Elas entram quando você sair desta tela.'); return; }
+      if (await cloudPull(state)) { save({ touch: false }); route(); toast('Atualizado com as mudanças do outro aparelho', 'ok'); }
+    });
+    syncMedia();
+    setInterval(syncMedia, 90_000);
+    cloudUsage().then((u) => u && console.info('Nuvem:', u));
+  } else setCloudStatus({ state: 'off', text: 'Só neste aparelho' });
 })();

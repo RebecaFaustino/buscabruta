@@ -1,20 +1,24 @@
 import { db } from './db.js';
+import { cloudPush } from './cloud.js';
 
 export const uid = (p = 'id') => p + '_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
-export const state = { clients: [], courses: [] };
+export const state = { clients: [], courses: [], media: {}, updatedAt: 0 };
 
-let saveTimer;
-export function save() {
-  if (state.storageError) return;
+let saveTimer, cloudTimer;
+// Salva neste aparelho na hora e na nuvem ~2 s depois da última mudança.
+export function save({ touch = true } = {}) {
+  if (touch) state.updatedAt = Date.now();
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => db.set('state', JSON.parse(JSON.stringify(state))).catch((e) => console.warn('Não foi possível salvar', e)), 250);
+  if (!state.storageError) saveTimer = setTimeout(() => db.set('state', JSON.parse(JSON.stringify(state))).catch((e) => console.warn('Não foi possível salvar', e)), 250);
+  if (touch) { clearTimeout(cloudTimer); cloudTimer = setTimeout(() => cloudPush(state), 2000); }
 }
 
 export async function load() {
   let s = null;
   try { s = await db.get('state'); } catch (e) { console.warn(e); state.storageError = true; }
   if (s) Object.assign(state, s);
+  state.media = state.media || {};
   for (const c of state.clients) {
     if (c.sfx === undefined) c.sfx = true;
     if (c.sfxVol === undefined) c.sfxVol = 0.5;
@@ -31,7 +35,7 @@ function seed() {
   const course = newCourse(c.id, 'Metabolismo Descomplicado');
   state.clients.push(c);
   state.courses.push(course);
-  save();
+  save({ touch: false }); // exemplo: não sobrescreve a nuvem
 }
 
 export function newClient(over = {}) {
