@@ -15,7 +15,7 @@ import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, ai
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60), d = Math.floor((t % 1) * 10); return `${m}:${String(s).padStart(2, '0')}.${d}`; };
-const fmtLong = (t) => { t = Math.round(t || 0); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return h ? `${h}h${String(m).padStart(2, '0')}` : `${m}min ${String(s).padStart(2, '0')}s`; };
+const fmtLong = (t) => { t = Math.round(t || 0); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return h ? `${h}h${String(m).padStart(2, '0')}` : m ? `${m}min ${String(s).padStart(2, '0')}s` : `${s}s`; };
 const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
 const slug = (s) => norm(s).replace(/\s+/g, '-').slice(0, 60) || 'aula';
 const lessonDur = (l) => l.clips.reduce((a, c) => a + c.out - c.in, 0);
@@ -406,7 +406,7 @@ async function viewReady(course, lessonId, fresh = false) {
     ${fresh ? '<p class="banner ok-banner">Pronto! Confira a prévia e toque em <b>Gerar vídeo final</b>.</p>' : ''}
     <div class="ready">
       <div class="stage">
-        <div class="canvas-wrap"><canvas id="rPrev" width="1280" height="720"></canvas></div>
+        <div class="canvas-wrap ${PLATFORMS[platform]?.h > PLATFORMS[platform]?.w ? 'vertical' : ''}"><canvas id="rPrev" ${PLATFORMS[platform]?.h > PLATFORMS[platform]?.w ? 'width="720" height="1280"' : 'width="1280" height="720"'}></canvas></div>
         <div class="transport"><button class="play" id="rPlay" aria-label="Reproduzir">▶</button><span class="time" id="rTime"></span></div>
       </div>
       <section class="panel">
@@ -451,7 +451,14 @@ async function viewReady(course, lessonId, fresh = false) {
   player.onTime = (T) => { tl.textContent = `${fmt(T)} / ${fmt(player.duration)}`; pb.textContent = player.playing ? '❚❚' : '▶'; };
   player.onTime(0);
   pb.onclick = () => { if (player.playing) player.stop(); else player.play(); pb.textContent = player.playing ? '❚❚' : '▶'; };
-  $('#rPlat').onchange = (e) => { platform = e.target.value; drawOut(); };
+  const vert = (k) => PLATFORMS[k].h > PLATFORMS[k].w;
+  $('#rPlat').onchange = (e) => {
+    const was = vert(platform);
+    platform = e.target.value;
+    lesson.platform = platform; save();
+    if (vert(platform) !== was) { player.stop(); viewReady(course, lesson.id); addBack(); return; } // muda a prévia para vertical/horizontal
+    drawOut();
+  };
   const restyle = () => { lesson.render = null; save(); player.invalidate(); player.draw(); drawOut(); };
   const sp = $('#rStyle');
   sp.innerHTML = stylePanelHTML(client);
@@ -525,7 +532,7 @@ async function viewReady(course, lessonId, fresh = false) {
       ? `<div class="render-ok"><b>✓ Vídeo final pronto</b> · ${mb(r.size)} · ${r.ext.toUpperCase()}
           <div class="btn-row"><button class="btn" id="rDl">Baixar vídeo</button>${nWords ? '<button class="ghost" id="rSrt">Baixar legenda</button>' : ''}</div></div>`
       : `<button class="btn big full" id="rGo">Gerar vídeo final</button>
-         <p class="hint">${PLATFORMS[platform].w >= 3840 ? '4K' : PLATFORMS[platform].h + 'p'} · ${PLATFORMS[platform].fps} fps · leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada. ${esc(PLATFORMS[platform].note)}</p>
+         <p class="hint">${Math.min(PLATFORMS[platform].w, PLATFORMS[platform].h) >= 2160 ? '4K' : Math.min(PLATFORMS[platform].w, PLATFORMS[platform].h) + 'p'}${PLATFORMS[platform].h > PLATFORMS[platform].w ? ' vertical' : ''} · ${PLATFORMS[platform].fps} fps · leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada. ${esc(PLATFORMS[platform].note)}</p>
          <div class="progress" id="rProg" hidden><span></span><em></em></div>`;
     if (same) {
       $('#rDl').onclick = async () => download(await db.getBlob(r.mediaId), `${base}.${r.ext}`);

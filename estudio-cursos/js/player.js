@@ -267,6 +267,8 @@ export class Player {
     if (v._org !== org) { v.style.transformOrigin = org; v._org = org; }
     const flt = lookFilter(cl, st);
     if (v._flt !== flt) { v.style.filter = flt; v._flt = flt; }
+    const pos = `${(fx * 100).toFixed(1)}% 38%`; // na prévia vertical, enquadra o rosto do expert
+    if (v._pos !== pos) { v.style.objectPosition = pos; v._pos = pos; }
   }
 
   // Miniatura de um modelo: quadro atual + legenda e destaque de exemplo.

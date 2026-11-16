@@ -408,3 +408,6 @@ details.grp[open] > summary::after { transform: rotate(90deg); }
 @media (max-width: 760px) { .ready details.grp > summary small { display: none; } }
 .cover-prev { display: block; width: 100%; height: auto; aspect-ratio: 16/9; border-radius: 10px; background: var(--surface-2); }
 pre.chapters { white-space: pre-wrap; font: 13px/1.6 "JetBrains Mono", ui-monospace, monospace; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; margin: 0; color: var(--ink-2); }
+.ready .canvas-wrap.vertical { aspect-ratio: auto; container-type: normal; display: block; background: transparent; }
+.ready .canvas-wrap.vertical .screen { aspect-ratio: 9/16; width: min(100%, calc(62vh * 9 / 16)); height: auto; margin: 0 auto; border-radius: var(--radius); }
+.facts b { white-space: nowrap; }
