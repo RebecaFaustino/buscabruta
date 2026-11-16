@@ -8,6 +8,7 @@ import {
 import { db } from './db.js';
 import { voiceChain } from './player.js';
 import { SFX } from './sfx.js';
+import { buildMusic, scheduleMusic } from './music.js';
 
 export async function offlineCodecs(preset) {
   if (typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined' || typeof OfflineAudioContext === 'undefined') return null;
@@ -58,6 +59,10 @@ async function renderAudio(player, srcs, total, onProgress, signal) {
       if (dur > 0) node.start(when, off, dur);
     }
     onProgress?.(i / clips.length);
+  }
+  if (cl.music && cl.music !== 'nenhuma') {
+    const buf = await buildMusic(cl.music);
+    if (buf) scheduleMusic(ctx, ctx.destination, buf, { T: 0, total, vol: cl.musicVol ?? 0.35, when: 0 });
   }
   if (cl.sfx) {
     const vol = cl.sfxVol ?? 0.5;
@@ -135,4 +140,23 @@ export async function renderOffline(player, preset, codecs, { onProgress, signal
     for (const s of srcs.values()) s.input.dispose?.();
   }
   return new Blob([output.target.buffer], { type: codecs.video === 'avc' ? 'video/mp4' : 'video/mp4' });
+}
+
+// Um quadro nítido do vídeo original (para a capa da aula). Decodifica direto do arquivo: funciona também no iPhone.
+export async function grabFrame(lesson, srcId, t) {
+  const src = lesson.sources.find((s) => s.id === srcId);
+  const blob = src && await db.getBlob(src.mediaId);
+  if (!blob) return null;
+  const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) return null;
+    const sample = await new VideoSampleSink(track).getSample(Math.max(0, t));
+    if (!sample) return null;
+    const c = document.createElement('canvas');
+    c.width = sample.displayWidth; c.height = sample.displayHeight;
+    c.getContext('2d').drawImage(sample.toCanvasImageSource(), 0, 0, c.width, c.height);
+    sample.close();
+    return c;
+  } finally { input.dispose?.(); }
 }

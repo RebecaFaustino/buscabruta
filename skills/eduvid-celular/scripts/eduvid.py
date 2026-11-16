@@ -293,8 +293,53 @@ def build_ass(path, W, H, words, phrases, opt, total):
     return cartoes
 
 
+TRILHAS = {
+    'calma': (70, [[48, 55, 64, 71], [45, 52, 60, 67], [41, 48, 57, 64], [43, 50, 59, 64]]),
+    'inspira': (96, [[48, 55, 60, 64], [43, 50, 55, 59], [45, 52, 57, 60], [41, 48, 53, 57]]),
+    'corporativa': (110, [[45, 52, 57, 60], [41, 48, 53, 57], [48, 55, 60, 64], [43, 50, 55, 59]]),
+}
+
+
+def gerar_trilha(np, nome, total, vol, sr=48000):
+    """Trilha de fundo composta na hora (pad + arpejo, sem direitos autorais), em laço de 16 s com entrada e saída suaves."""
+    bpm, acordes = TRILHAS[nome]
+    beat = 60 / bpm
+    loop = np.zeros(int(20 * sr), dtype=np.float32)
+    hz = lambda m: 440 * 2 ** ((m - 69) / 12)
+    def nota(m, at, dur, vol_, decay=None, harm=(1, 0.5, 0.25)):
+        n = int((dur + (decay or 1.4)) * sr); t = np.arange(n) / sr
+        sig = sum(h * np.sin(2 * np.pi * hz(m) * (k + 1) * t) for k, h in enumerate(harm))
+        if decay: env = np.minimum(1, t / 0.006) * np.exp(-t * 4.5 / decay)
+        else: env = np.clip(np.minimum(t / 1.2, (dur + 1.4 - t) / 1.4), 0, 1)
+        i = int(at * sr); k = min(n, len(loop) - i); loop[i:i + k] += (sig * env * vol_)[:k].astype(np.float32)
+    for c, ch in enumerate(acordes):
+        at = c * 4
+        for m in ch: nota(m, at, 4, 0.03, harm=(1, 0.3, 0.12))
+        nota(ch[0] - 12, at, 0, 0.09, decay=3.5)
+        if nome == 'calma':
+            for j, o in enumerate([0, 1.5, 2.5]): nota(ch[(j + 1) % 4] + 12, at + o, 0, 0.06, decay=2.4)
+        else:
+            k = 0
+            while k * beat / 2 < 4 - 1e-6:
+                nota(ch[[0, 2, 1, 3, 2, 1, 3, 2][k % 8]] + 12, at + k * beat / 2, 0, 0.05, decay=0.7); k += 1
+        if nome == 'corporativa':
+            k = 0
+            while k * beat < 4 - 1e-6:
+                t = np.arange(int(0.3 * sr)) / sr; f = 42 + 78 * np.exp(-t * 18)
+                kick = np.sin(np.cumsum(2 * np.pi * f / sr)) * np.exp(-t * 14) * 0.3
+                i = int((at + k * beat) * sr); loop[i:i + len(kick)] += kick[:len(loop) - i].astype(np.float32); k += 1
+    L = int(16 * sr)
+    base = loop[:L].copy(); base[:len(loop) - L] += loop[L:]
+    base /= max(1e-6, np.abs(base).max()) / 0.9
+    reps = int(np.ceil((total + 2) * sr / L)) + 1
+    out = np.tile(base, reps)[:int((total + 2) * sr)]
+    t = np.arange(len(out)) / sr
+    env = np.minimum(1, t / 1.5) * np.clip((total - t) / 2.5, 0, 1)
+    return out * env * vol
+
+
 def gerar_efeitos(path, total, cartoes, opt, sr=48000):
-    """Trilha de efeitos sonoros sintetizados (sino na abertura, tique no nome, whoosh + pop nos destaques)."""
+    """Efeitos sonoros sintetizados (sino na abertura, tique no nome, whoosh + pop nos destaques) e trilha de fundo."""
     try:
         import numpy as np
     except ImportError:
@@ -323,10 +368,14 @@ def gerar_efeitos(path, total, cartoes, opt, sr=48000):
         t = np.arange(int(0.08 * sr)) / sr
         return ((np.sin(2*np.pi*2400*t)*0.6 + rng.uniform(-0.2, 0.2, len(t))) * np.exp(-t*70) * 0.5).astype(np.float32)
     v = opt.volume_efeitos
-    if opt.abertura and opt.titulo: put(sino() * v * 0.8, 0.05)
-    if opt.nome: put(tique() * v * 0.7, 3.6 if opt.abertura else 0.6)
-    w, p = whoosh(), pop()
-    for t in cartoes: put(w * v, t); put(p * v * 0.6, t + 0.18)
+    if opt.efeitos:
+        if opt.abertura and opt.titulo: put(sino() * v * 0.8, 0.05)
+        if opt.nome: put(tique() * v * 0.7, 3.6 if opt.abertura else 0.6)
+        w, p = whoosh(), pop()
+        for t in cartoes: put(w * v, t); put(p * v * 0.6, t + 0.18)
+    if opt.trilha != 'nenhuma':
+        m = gerar_trilha(np, opt.trilha, total, opt.volume_trilha * 0.35, sr)
+        n = min(len(m), len(out)); out[:n] += m[:n]
     pcm = (np.clip(out, -1, 1) * 32767).astype('<i2')
     with wave.open(str(path), 'wb') as f:
         f.setnchannels(1); f.setsampwidth(2); f.setframerate(sr); f.writeframes(pcm.tobytes())
@@ -359,6 +408,10 @@ def cmd_renderizar(a):
     video, pasta = Path(a.video).resolve(), Path(a.pasta).resolve()
     info = json.loads((pasta / 'info.json').read_text())
     trechos = json.loads((pasta / 'trechos.json').read_text()) if not a.sem_cortes else [[0, info['dur']]]
+    if a.trecho:  # só um pedaço do vídeo original (ex.: Reels de divulgação)
+        t0, t1 = (float(x) for x in a.trecho.split(','))
+        trechos = [[max(s, t0), min(e, t1)] for s, e in trechos if min(e, t1) - max(s, t0) > 0.05]
+        if not trechos: raise SystemExit('Nenhuma fala dentro do --trecho informado.')
     frases = json.loads((pasta / 'transcricao.json').read_text())
     a.palavras = [p.strip() for p in (a.palavras or '').split(',') if p.strip()]
     fps = a.fps or round(info['fps']) or 30
@@ -392,7 +445,7 @@ def cmd_renderizar(a):
     resultados = []
     sfx_wav = pasta / 'efeitos.wav'
     def sfx_in(cartoes):
-        ok = a.efeitos and gerar_efeitos(sfx_wav, total, cartoes, a)
+        ok = (a.efeitos or a.trilha != 'nenhuma') and gerar_efeitos(sfx_wav, total, cartoes, a)
         sfx_in.on = bool(ok)
         return ['-i', str(sfx_wav)] if ok else []
     def audio_graph():
@@ -455,6 +508,9 @@ def main():
     rd.add_argument('--fps', type=int, help='quadros por segundo da saída (ex.: 60); padrão = o do vídeo original')
     rd.add_argument('--sem-efeitos', dest='efeitos', action='store_false', help='não adicionar efeitos sonoros')
     rd.add_argument('--volume-efeitos', type=float, default=0.5)
+    rd.add_argument('--trilha', default='nenhuma', choices=['nenhuma', *TRILHAS], help='trilha de fundo composta na hora (sem direitos autorais)')
+    rd.add_argument('--volume-trilha', type=float, default=0.5, help='0 a 1 (0.5 = baixinha sob a voz)')
+    rd.add_argument('--trecho', help='inicio,fim em segundos do vídeo ORIGINAL: renderiza só esse pedaço (Reels)')
     a = p.parse_args()
     {'analisar': cmd_analisar, 'renderizar': cmd_renderizar}[a.cmd](a)
 

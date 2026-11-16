@@ -57,6 +57,12 @@ Saídas em `entrega/`:
 
 **Efeitos sonoros** (ligados por padrão): sino suave na abertura, tique quando entra o nome + CRM, whoosh + pop em cada destaque. Use `--volume-efeitos 0.3` para mais discretos ou `--sem-efeitos` para desligar. São sintetizados na hora: não precisa baixar nada.
 
+**Trilha sonora de fundo** (desligada por padrão): `--trilha calma|inspira|corporativa`, e `--volume-trilha 0.3` para deixá-la mais baixa. É composta na hora, então não tem problema de direitos autorais, entra e sai suave e fica sob a voz. Ofereça quando ela pedir "música", "trilha" ou "fundo musical". Para aula densa, `calma`; para abertura de curso, `inspira`.
+
+**Reels de divulgação**: leia o `transcricao.json` e escolha o trecho mais forte, de 30 a 60 s, que faça sentido sozinho, comece prendendo a atenção e termine numa frase completa (sem promessa de cura). Renderize só ele na vertical: `--trecho INICIO,FIM --formatos 9x16` (segundos do vídeo original). Combina bem com `--trilha inspira`.
+
+**Capítulos**: pelo `transcricao.json`, monte de 3 a 8 capítulos (`00:00 Introdução`, `02:15 ...`) usando os tempos da aula editada. A duração final aparece no resumo da renderização. Mande os capítulos junto da descrição.
+
 Opções úteis: `--formatos 16x9` (só a versão do curso, mais rápido), `--sem-zoom`, `--sem-abertura`, `--look natural|clinico|quente|vivo`, `--legenda nenhuma` (quando a plataforma vai exibir só o .srt), `--preset veryfast` (aulas longas; a qualidade fica quase igual).
 
 Tempo: a análise leva cerca de 1/5 da duração. A renderização leva perto de 1× a duração por formato. Para aulas acima de 20 min, avise antes ("vai levar uns X min").

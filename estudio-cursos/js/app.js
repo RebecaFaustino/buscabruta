@@ -5,6 +5,8 @@ import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player, drawStylePreview } from './player.js';
 import { SFX, playSfx } from './sfx.js';
+import { TRACKS, buildMusic } from './music.js';
+import { drawCover } from './cover.js';
 import { TEMPLATES, PALETTES, CAPTION_MODES, CARD_VARIANTS, resolveStyle } from './styles.js';
 import { renderLesson, extOf, pickMime } from './render.js';
 import { cloud, cloudInit, cloudPull, cloudPush, cloudWatch, cloudUploadMedia, cloudFetchMedia, cloudUsage } from './cloud.js';
@@ -398,7 +400,7 @@ async function viewReady(course, lessonId, fresh = false) {
   const client = getClient(course.clientId);
   const raw = rawDur(lesson), d = lessonDur(lesson);
   const nWords = Object.values(lesson.words).reduce((a, w) => a + w.length, 0);
-  let platform = client.platform;
+  let platform = lesson.platform || client.platform;
   view.innerHTML = `
     <header class="page-head"><div><p class="eyebrow"><a href="#/">Início</a> / ${esc(client.name)}</p><h1>${esc(lesson.title)}</h1></div></header>
     ${fresh ? '<p class="banner ok-banner">Pronto! Confira a prévia e toque em <b>Gerar vídeo final</b>.</p>' : ''}
@@ -422,7 +424,22 @@ async function viewReady(course, lessonId, fresh = false) {
         <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">✂ Ajustar cortes e legenda</a><a class="ghost btn-ghost" href="#/novo">+ Editar outro vídeo</a></div>
         <details class="grp" open><summary><b>💬 Pedir ajuste ao Claude</b><small>escreva o que quer mudar</small></summary><div class="grp-body">${chatHTML()}</div></details>
         <details class="grp"><summary><b>🎨 Estilo do vídeo</b><small>modelos, cores, legenda</small></summary><div class="grp-body"><div id="rStyle" class="style-panel"></div></div></details>
-        ${lesson.description ? `<details class="grp"><summary><b>📝 Descrição da aula</b><small>para a plataforma</small></summary><div class="grp-body"><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></div></details>` : ''}
+        <details class="grp"><summary><b>🎵 Trilha sonora</b><small>${esc(TRACKS[client.music || 'nenhuma']?.name || '')}</small></summary><div class="grp-body" id="rMusic">${musicBlock(client)}</div></details>
+        <details class="grp"><summary><b>🖼 Capa da aula</b><small>miniatura para a plataforma</small></summary><div class="grp-body">
+          <canvas id="rCover" class="cover-prev" width="1280" height="720"></canvas>
+          <p class="hint">A capa usa o momento atual da prévia. Avance o vídeo até um bom quadro do expert e toque em “Usar este momento”.</p>
+          <div class="btn-row"><button class="ghost" id="rCoverNow" type="button">Usar este momento</button><button class="btn" id="rCoverDl" type="button">Baixar capa (PNG)</button></div>
+        </div></details>
+        <details class="grp"><summary><b>📱 Reels de divulgação</b><small>o melhor trecho, na vertical</small></summary><div class="grp-body">
+          <p class="hint">O app escolhe o trecho mais forte da aula (30 a 60 s), cria uma versão vertical 9:16 com legenda e destaques, pronta para Instagram, TikTok e Shorts.</p>
+          <button class="btn" id="rReels" type="button">Criar Reels com o melhor trecho</button>
+        </div></details>
+        <details class="grp"><summary><b>📝 Descrição e capítulos</b><small>para a plataforma</small></summary><div class="grp-body">
+          ${lesson.description ? `<p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button>` : '<p class="hint">Sem descrição ainda (precisa da legenda).</p>'}
+          <h3>Capítulos</h3>
+          <pre class="chapters" id="rChap">${esc(lesson.chapters || 'Toque em “Gerar capítulos” para criar a lista com horários (YouTube, Hotmart e Vimeo usam).')}</pre>
+          <div class="btn-row"><button class="ghost small" id="rChapGo" type="button">Gerar capítulos</button>${lesson.chapters ? '<button class="ghost small" id="rChapCopy" type="button">Copiar capítulos</button>' : ''}</div>
+        </div></details>
       </section>
     </div>`;
   const player = new Player($('#rPrev'));
@@ -443,6 +460,62 @@ async function viewReady(course, lessonId, fresh = false) {
   $('#rSfx').onchange = (e) => { client.sfx = e.target.checked; lesson.render = null; save(); drawOut(); };
   $('#rHear').onclick = (e) => { e.preventDefault(); player.ensureAudio(); playSfx(player.ctx, player.sfxBus, 'whoosh', client.sfxVol ?? 0.5); playSfx(player.ctx, player.sfxBus, 'pop', (client.sfxVol ?? 0.5) * 0.6, 0.18); };
   $('#rCopy') && ($('#rCopy').onclick = () => navigator.clipboard?.writeText(lesson.description).then(() => toast('Descrição copiada', 'ok'), () => toast('Selecione o texto e copie.')));
+  bindMusic($('#rMusic'), client, () => { lesson.render = null; save(); drawOut(); });
+
+  // ---- capa ----
+  let coverFrame = null, coverAt = null;
+  const coverOpts = () => ({ title: lesson.title, module: course.auto ? '' : course.modules.find((m) => m.lessons.includes(lesson))?.title || '' });
+  const drawCv = () => drawCover($('#rCover'), coverFrame, client, coverOpts());
+  async function grabAt(T) {
+    if (!lesson.clips.length) return;
+    const i = player.clipAt(T), c = lesson.clips[i];
+    const { grabFrame } = await import('./render-offline.js');
+    coverFrame = await grabFrame(lesson, c.srcId, c.in + (T - player.starts[i])).catch((e) => { console.warn(e); return null; });
+    coverAt = T;
+    drawCv();
+  }
+  drawCv();
+  view.querySelector('#rCover').closest('details').addEventListener('toggle', (e) => { if (e.target.open && coverAt == null) grabAt(Math.min(player.duration * 0.15, 6)); });
+  $('#rCoverNow').onclick = () => grabAt(player.T);
+  $('#rCoverDl').onclick = async () => {
+    if (coverAt == null) await grabAt(Math.min(player.duration * 0.15, 6));
+    const big = document.createElement('canvas'); big.width = 1280; big.height = 720;
+    drawCover(big, coverFrame, client, coverOpts());
+    big.toBlob((b) => download(b, `capa-${slug(lesson.title)}.png`), 'image/png');
+  };
+
+  // ---- reels ----
+  $('#rReels').onclick = async () => {
+    const btn = $('#rReels');
+    if (!lesson.clips.length) return toast('A aula não tem vídeo.');
+    btn.disabled = true; btn.textContent = 'Escolhendo o melhor trecho…';
+    try {
+      const pick = await pickHighlight(lesson, client, await cap('sample'));
+      const r = sliceLesson(lesson, pick.a, pick.b, pick.title);
+      const mod = course.modules.find((m) => m.lessons.includes(lesson));
+      mod.lessons.splice(mod.lessons.indexOf(lesson) + 1, 0, r);
+      save();
+      toast(`Reels criado: ${fmtLong(pick.b - pick.a)} a partir de ${fmt(pick.a)}`, 'ok');
+      go(`#/pronto/${course.id}/${r.id}`);
+    } catch (e) { console.error(e); toast('Não foi possível criar o Reels: ' + e.message, 'err'); btn.disabled = false; btn.textContent = 'Criar Reels com o melhor trecho'; }
+  };
+
+  // ---- capítulos ----
+  $('#rChapGo').onclick = async () => {
+    const btn = $('#rChapGo');
+    btn.disabled = true; btn.textContent = 'Criando…';
+    try {
+      const txt = await makeChapters(lesson, await cap('sample'));
+      if (!txt) { toast('Os capítulos precisam da legenda da aula.'); return; }
+      lesson.chapters = txt; save();
+      $('#rChap').textContent = txt;
+      if (!$('#rChapCopy')) btn.insertAdjacentHTML('afterend', '<button class="ghost small" id="rChapCopy" type="button">Copiar capítulos</button>');
+      $('#rChapCopy').onclick = copyChap;
+      toast('Capítulos criados', 'ok');
+    } finally { btn.disabled = false; btn.textContent = 'Gerar capítulos'; }
+  };
+  const copyChap = () => navigator.clipboard?.writeText(lesson.chapters).then(() => toast('Capítulos copiados', 'ok'), () => toast('Selecione o texto e copie.'));
+  $('#rChapCopy') && ($('#rChapCopy').onclick = copyChap);
 
   const base = slug(lesson.title);
   function drawOut() {
@@ -477,6 +550,117 @@ async function viewReady(course, lessonId, fresh = false) {
     };
   }
   drawOut();
+}
+
+// ======================= Trilha, Reels e capítulos =======================
+const musicBlock = (c) => `
+  <label>Trilha<select data-music>${Object.entries(TRACKS).map(([k, t]) => `<option value="${k}" ${k === (c.music || 'nenhuma') ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+  <label>Volume da trilha <output>${Math.round((c.musicVol ?? 0.35) * 100)}%</output><input type="range" data-music-vol min="0.05" max="1" step="0.05" value="${c.musicVol ?? 0.35}"></label>
+  <div class="btn-row"><button class="ghost small" data-music-hear type="button">▶ Ouvir a trilha</button></div>
+  <p class="hint">Composta pelo próprio app: sem direitos autorais. Fica baixinha sob a voz e entra e sai suave.</p>`;
+let musicPrev = null;
+function bindMusic(root, c, onChange) {
+  if (!root) return;
+  const sel = root.querySelector('[data-music]'), vol = root.querySelector('[data-music-vol]'), hear = root.querySelector('[data-music-hear]');
+  sel.onchange = () => { c.music = sel.value; save(); onChange?.(); if (c.music !== 'nenhuma') buildMusic(c.music); const sm = root.closest('details')?.querySelector('summary small'); if (sm) sm.textContent = TRACKS[c.music].name; };
+  vol.oninput = () => { c.musicVol = parseFloat(vol.value); vol.parentElement.querySelector('output').textContent = Math.round(c.musicVol * 100) + '%'; save(); onChange?.(); };
+  hear.onclick = async () => {
+    if (musicPrev) { musicPrev.stop(); musicPrev = null; hear.textContent = '▶ Ouvir a trilha'; return; }
+    if (!c.music || c.music === 'nenhuma') return toast('Escolha uma trilha primeiro.');
+    previewCtx = previewCtx || new (window.AudioContext || window.webkitAudioContext)();
+    previewCtx.resume();
+    hear.textContent = 'Compondo…';
+    const buf = await buildMusic(c.music);
+    if (!buf) { hear.textContent = '▶ Ouvir a trilha'; return toast('Este navegador não consegue tocar a trilha.'); }
+    const src = previewCtx.createBufferSource(), g = previewCtx.createGain();
+    src.buffer = buf; g.gain.value = Math.min(1, (c.musicVol ?? 0.35) * 2.2);
+    src.connect(g).connect(previewCtx.destination); src.start(); src.stop(previewCtx.currentTime + 10);
+    musicPrev = src; hear.textContent = '■ Parar';
+    src.onended = () => { if (musicPrev === src) { musicPrev = null; hear.textContent = '▶ Ouvir a trilha'; } };
+  };
+}
+
+// Escolhe o trecho mais forte (30–60 s) da aula editada: com a IA quando disponível; senão, pelas palavras-chave.
+async function pickHighlight(lesson, client, smp) {
+  const caps = timelineCaptions(lesson), D = lessonDur(lesson);
+  const firstWords = (t) => t.split(/\s+/).slice(0, 7).join(' ');
+  if (D <= 65 || !caps.length) return { a: 0, b: Math.min(D, 60), title: lesson.title };
+  if (smp) {
+    try {
+      const list = caps.map((c, i) => `${i}|${Math.round(c.s)}s|${c.text}`).join('\n').slice(0, 40000);
+      const r = await smp(`Você edita aulas de ${client.name} (${client.specialty || 'saúde'}). Escolha o MELHOR trecho contínuo para um Reels de divulgação: 30 a 60 segundos, que faça sentido sozinho, comece com uma frase que prenda a atenção e termine numa frase completa. Respeite as normas de publicidade médica do CFM (nada de promessa de cura ou resultado).
+Frases da aula (índice|início|texto):
+${list}
+Responda só com JSON: {"inicio": índice da primeira frase, "fim": índice da última frase, "titulo": "título curto e chamativo, até 6 palavras"}`, { modelTier: 'quick' });
+      const j = JSON.parse((r.text.match(/\{[\s\S]*\}/) || ['{}'])[0]);
+      const i = Number(j.inicio), k = Number(j.fim);
+      if (caps[i] && caps[k] && k >= i) {
+        const a = caps[i].s, b = caps[k].e;
+        if (b - a >= 15 && b - a <= 80) return { a: Math.max(0, a - 0.15), b: Math.min(D, b + 0.35), title: String(j.titulo || '').slice(0, 60) || firstWords(caps[i].text) };
+      }
+    } catch (e) { console.warn('IA do Reels indisponível, usando escolha automática', e); }
+  }
+  const kws = client.keywords.map(norm);
+  let best = null;
+  for (let i = 0; i < caps.length; i++) {
+    if (i > 0 && !/[.!?…]$/.test(caps[i - 1].text.trim())) continue; // começa no início de uma frase
+    let k = i;
+    while (k + 1 < caps.length && caps[k + 1].e - caps[i].s <= 58) k++;
+    const dur = caps[k].e - caps[i].s;
+    if (dur < 25) continue;
+    const text = norm(caps.slice(i, k + 1).map((c) => c.text).join(' '));
+    const words = text.split(' ').length;
+    const score = kws.reduce((a, w) => a + (w && text.includes(w) ? 3 : 0), 0) + words / dur;
+    if (!best || score > best.score) best = { score, i, k };
+  }
+  if (!best) return { a: 0, b: Math.min(D, 60), title: lesson.title };
+  return { a: Math.max(0, caps[best.i].s - 0.15), b: Math.min(D, caps[best.k].e + 0.35), title: firstWords(caps[best.i].text) };
+}
+
+// Nova aula com só o trecho [a, b] da linha do tempo (usa as mesmas gravações, sem duplicar arquivos).
+function sliceLesson(lesson, a, b, title) {
+  const r = newLesson('Reels — ' + (title || lesson.title));
+  r.sources = lesson.sources.map((s) => ({ ...s }));
+  r.words = JSON.parse(JSON.stringify(lesson.words));
+  r.cards = lesson.cards.map((k) => ({ ...k, id: uid('card') }));
+  r.clips = [];
+  let acc = 0;
+  for (const c of lesson.clips) {
+    const d = c.out - c.in, s0 = Math.max(a, acc), s1 = Math.min(b, acc + d);
+    if (s1 - s0 > 0.05) r.clips.push({ ...c, id: uid('clip'), in: c.in + (s0 - acc), out: c.in + (s1 - acc) });
+    acc += d;
+  }
+  r.platform = 'reels';
+  r.reelsOf = lesson.id;
+  r.description = lesson.description;
+  return r;
+}
+
+// Capítulos com horário (formato aceito pelo YouTube e por players como Vimeo/Panda).
+async function makeChapters(lesson, smp) {
+  const caps = timelineCaptions(lesson), D = lessonDur(lesson);
+  if (!caps.length) return null;
+  const mmss = (t) => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s).padStart(2, '0'); };
+  const n = Math.max(2, Math.min(8, Math.round(D / 90)));
+  if (smp) {
+    try {
+      const list = caps.map((c, i) => `${i}|${mmss(c.s)}|${c.text}`).join('\n').slice(0, 40000);
+      const r = await smp(`Divida esta aula em ${n} capítulos (no máximo 8) pelos assuntos. O primeiro começa na frase 0. Títulos curtos (até 6 palavras), claros para leigos, em português.
+Frases (índice|horário|texto):
+${list}
+Responda só com JSON: [{"frase": índice, "titulo": "..."}]`, { modelTier: 'quick' });
+      const arr = JSON.parse((r.text.match(/\[[\s\S]*\]/) || ['[]'])[0]);
+      const ok = arr.filter((x) => caps[Number(x.frase)] && x.titulo).sort((x, y) => x.frase - y.frase);
+      if (ok.length >= 2) { ok[0].frase = 0; return ok.map((x) => `${mmss(Number(x.frase) === 0 ? 0 : caps[Number(x.frase)].s)} ${String(x.titulo).trim()}`).join('\n'); }
+    } catch (e) { console.warn('IA dos capítulos indisponível', e); }
+  }
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    const t = (D * k) / n;
+    const c = caps.find((x) => x.s >= t - 0.01) || caps[caps.length - 1];
+    out.push(`${mmss(k === 0 ? 0 : c.s)} ${k === 0 ? 'Introdução' : c.text.split(/\s+/).slice(0, 6).join(' ').replace(/[,.;:]+$/, '')}`);
+  }
+  return out.join('\n');
 }
 
 // ======================= Cliente =======================
@@ -1044,7 +1228,8 @@ async function viewEditor(course, lessonId) {
       lesson.clips = lesson.clips.filter((c) => c.srcId !== id);
       lesson.cards = lesson.cards.filter((c) => c.srcId !== id);
       delete lesson.words[id];
-      await db.delMedia(s.mediaId);
+      const shared = state.courses.some((k) => k.modules.some((m) => m.lessons.some((l) => l !== lesson && l.sources.some((x) => x.mediaId === s.mediaId))));
+      if (!shared) await db.delMedia(s.mediaId);
       await player.setLesson(lesson, client);
       ed.changed(); renderTab();
     }));
@@ -1430,7 +1615,8 @@ function stylePanelHTML(c) {
         ${check('lowerThird', 'Nome + CRM', c.lowerThird)}
         ${check('watermark', 'Logo no canto', c.watermark)}
       </div>`)}
-    ${grp('sons', 'Efeitos sonoros', c.sfx ? 'ligados' : 'desligados', sfxBlock(c).replace('<h3>Efeitos sonoros</h3>', ''))}`;
+    ${grp('sons', 'Efeitos sonoros', c.sfx ? 'ligados' : 'desligados', sfxBlock(c).replace('<h3>Efeitos sonoros</h3>', ''))}
+    ${grp('trilha', 'Trilha sonora', esc(TRACKS[c.music || 'nenhuma']?.name || ''), `<div data-music-box>${musicBlock(c)}</div>`)}`;
 }
 
 function bindStylePanel(root, c, player, onChange) {
@@ -1464,6 +1650,7 @@ function bindStylePanel(root, c, player, onChange) {
   }));
   bindForm(root, c, (k) => { if (k === 'cleanVoice') player?.refreshAudio(); if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
   bindSfxPreview(root, c, player);
+  bindMusic(root.querySelector('[data-music-box]'), c, onChange);
   drawThumbs(root, c);
 }
 
@@ -1525,9 +1712,9 @@ function bindChat(root, { client, lesson, course, player, refresh }) {
     { name: 'ajustar_cortes', description: 'Refaz os cortes secos. ritmo: "rapido" (pausas curtas), "dinamico" (padrão) ou "natural" (mantém respiros).',
       inputSchema: { type: 'object', properties: { ritmo: { type: 'string', enum: ['rapido', 'dinamico', 'natural'] } }, required: ['ritmo'] },
       execute: async ({ ritmo }) => { Object.assign(client, { rapido: { minSilence: 0.3, padding: 0.05 }, dinamico: { minSilence: 0.45, padding: 0.08 }, natural: { minSilence: 0.7, padding: 0.15 } }[ritmo] || {}); const removed = await autoCutLesson(lesson, client); player.invalidate(); await player.seek(0); return touch(`${lesson.clips.length} cortes · ${fmtLong(removed)} removidos`); } },
-    { name: 'definir_extras', description: 'Liga/desliga e ajusta: efeitos sonoros e volume (0-1), sombra (0-1.5), cor da imagem, zoom nos cortes, abertura, nome+CRM, logo.',
-      inputSchema: { type: 'object', properties: { efeitos_sonoros: { type: 'boolean' }, volume_efeitos: { type: 'number' }, sombra: { type: 'number' }, cor_imagem: { type: 'string', enum: ['auto', ...Object.keys(LOOKS)] }, zoom_nos_cortes: { type: 'boolean' }, abertura: { type: 'boolean' }, nome_na_tela: { type: 'boolean' }, logo: { type: 'boolean' } } },
-      execute: (i) => { const m = { efeitos_sonoros: 'sfx', volume_efeitos: 'sfxVol', sombra: 'shadow', cor_imagem: 'look', abertura: 'openingTitle', nome_na_tela: 'lowerThird', logo: 'watermark' }; for (const [k, v] of Object.entries(i)) if (m[k] !== undefined && v !== undefined) client[m[k]] = v; if (i.zoom_nos_cortes !== undefined) { client.autoZoom = !!i.zoom_nos_cortes; lesson.clips.forEach((c, j) => (c.zoom = client.autoZoom && j % 2 ? 1.15 : 1)); } return touch('Ajustes aplicados'); } },
+    { name: 'definir_extras', description: 'Liga/desliga e ajusta: trilha sonora de fundo (nenhuma, calma, inspira, corporativa) e volume (0-1), efeitos sonoros e volume (0-1), sombra (0-1.5), cor da imagem, zoom nos cortes, abertura, nome+CRM, logo.',
+      inputSchema: { type: 'object', properties: { efeitos_sonoros: { type: 'boolean' }, volume_efeitos: { type: 'number' }, sombra: { type: 'number' }, cor_imagem: { type: 'string', enum: ['auto', ...Object.keys(LOOKS)] }, trilha: { type: 'string', enum: Object.keys(TRACKS) }, volume_trilha: { type: 'number' }, zoom_nos_cortes: { type: 'boolean' }, abertura: { type: 'boolean' }, nome_na_tela: { type: 'boolean' }, logo: { type: 'boolean' } } },
+      execute: (i) => { const m = { trilha: 'music', volume_trilha: 'musicVol', efeitos_sonoros: 'sfx', volume_efeitos: 'sfxVol', sombra: 'shadow', cor_imagem: 'look', abertura: 'openingTitle', nome_na_tela: 'lowerThird', logo: 'watermark' }; for (const [k, v] of Object.entries(i)) if (m[k] !== undefined && v !== undefined) client[m[k]] = v; if (i.zoom_nos_cortes !== undefined) { client.autoZoom = !!i.zoom_nos_cortes; lesson.clips.forEach((c, j) => (c.zoom = client.autoZoom && j % 2 ? 1.15 : 1)); } return touch('Ajustes aplicados'); } },
   ];
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -1656,7 +1843,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
       if (l.render) dir.file(`${base}.${l.render.ext}`, await db.getBlob(l.render.mediaId), { binary: true, compression: 'STORE' });
       const caps = timelineCaptions(l);
       if (caps.length) dir.file(`${base}.srt`, srt(caps));
-      if (l.description) dir.file(`${base}-descricao.txt`, l.description);
+      if (l.description || l.chapters) dir.file(`${base}-descricao.txt`, [l.description, l.chapters && 'Capítulos:\n' + l.chapters].filter(Boolean).join('\n\n'));
     }
     root.file('grade-do-curso.csv', '﻿' + csv());
     root.file('descricao-do-curso.txt', `${course.title}\n${c.name}${c.crm ? ' — ' + c.crm : ''}\n\n${course.description}\n\nPalavras-chave: ${c.keywords.join(', ')}`);

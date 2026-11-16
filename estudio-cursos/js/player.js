@@ -4,6 +4,7 @@ import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
 import { resolveStyle, FONTS } from './styles.js';
 import { playSfx } from './sfx.js';
+import { buildMusic, scheduleMusic } from './music.js';
 
 const urlCache = new Map(); // mediaId -> objectURL
 export async function mediaURL(mediaId) {
@@ -140,6 +141,9 @@ export class Player {
     this.sfxBus = ctx.createGain();
     this.sfxBus.connect(this.speaker);
     this.sfxBus.connect(this.dest);
+    this.musicBus = ctx.createGain();
+    this.musicBus.connect(this.speaker);
+    this.musicBus.connect(this.dest);
     this.chainIn = voiceChain(ctx, this.master);
     for (const v of this.videos.values()) this.wireAudio(v);
   }
@@ -173,6 +177,7 @@ export class Player {
 
   stop() {
     this.playing = false;
+    this.music?.stop(); this.music = null;
     for (const v of this.videos.values()) v.pause();
   }
 
@@ -181,6 +186,7 @@ export class Player {
     this.ensureAudio();
     if (this.T >= this.duration - 0.05) this.T = 0;
     this.playing = true;
+    this.startMusic();
     const clips = this.lesson.clips;
     let i = this.clipAt(this.T);
     let prevV = null;
@@ -218,8 +224,18 @@ export class Player {
       if (i < clips.length) this.T = this.starts[i];
     }
     if (prevV) prevV.pause();
+    this.music?.stop(); this.music = null;
     if (this.playing) { this.T = this.duration; this.playing = false; }
     this.onTime(this.T);
+  }
+
+  async startMusic() {
+    const cl = this.client;
+    if (!cl?.music || cl.music === 'nenhuma' || !this.ctx) return;
+    const buf = await buildMusic(cl.music);
+    if (!buf || !this.playing) return;
+    this.music?.stop();
+    this.music = scheduleMusic(this.ctx, this.musicBus, buf, { T: this.T, total: this.duration, vol: cl.musicVol ?? 0.35 });
   }
 
   // Toca os efeitos cujo momento foi cruzado entre dois quadros.
