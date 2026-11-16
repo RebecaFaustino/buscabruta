@@ -1,5 +1,6 @@
 // Análise de áudio: envelope (para forma de onda), detecção de silêncio e PCM 16 kHz para transcrição.
-import { Input, ALL_FORMATS, BlobSource, AudioBufferSink } from '../vendor/mediabunny.min.mjs';
+// O leitor de mídia (mediabunny, ~700 KB) só é baixado quando um vídeo é analisado: o app abre bem mais rápido.
+const loadMB = () => import('../vendor/mediabunny.min.mjs');
 
 const ENV_RATE = 100; // pontos por segundo no envelope
 
@@ -18,6 +19,7 @@ export async function decodePCM16k(blob, onProgress) {
 // Lê só a trilha de áudio, aos poucos (WebCodecs): não carrega o vídeo inteiro na memória.
 async function decodeStreaming(blob, onProgress) {
   if (typeof AudioDecoder === 'undefined') throw new Error('sem WebCodecs');
+  const { Input, ALL_FORMATS, BlobSource, AudioBufferSink } = await loadMB();
   const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
   const track = await input.getPrimaryAudioTrack();
   if (!track) throw new Error('sem trilha de áudio');

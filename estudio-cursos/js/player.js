@@ -64,6 +64,20 @@ export class Player {
     this.stop();
     this.lesson = lesson;
     this.client = client;
+    if (this.host && lesson.sources.some((s) => !this.videos.has(s.id))) this.host.classList.add('loading');
+    try { await this.loadSources(lesson); } finally { this.host?.classList.remove('loading'); }
+    this.logo = null;
+    if (client.logoMediaId) {
+      const img = new Image();
+      const u = await mediaURL(client.logoMediaId).catch(() => null);
+      if (u) { img.src = u; await img.decode().catch(() => {}); this.logo = img; }
+    }
+    this.invalidate();
+    this.T = Math.min(this.T, this.duration);
+    await this.seek(this.T);
+  }
+
+  async loadSources(lesson) {
     for (const s of lesson.sources) {
       if (this.videos.has(s.id)) continue;
       const v = document.createElement('video');
@@ -71,7 +85,9 @@ export class Player {
       v.playsInline = true;
       v.crossOrigin = 'anonymous';
       v.setAttribute('playsinline', '');
-      v.src = await mediaURL(s.mediaId);
+      const url = await mediaURL(s.mediaId).catch((e) => { console.warn(e); return null; });
+      if (!url) continue; // vídeo não está neste aparelho nem na nuvem: a tela mostra o aviso
+      v.src = url;
       if (this.host) { v.className = 'live'; v.style.visibility = 'hidden'; this.host.insertBefore(v, this.canvas); }
       else { v.style.cssText = 'width:2px;height:2px'; videoShelf().appendChild(v); }
       this.videos.set(s.id, v);
@@ -79,16 +95,6 @@ export class Player {
       // no iPhone o vídeo só carrega depois de um toque: não espera mais que 2,5 s
       await new Promise((r) => { if (v.readyState >= 2) r(); else { v.addEventListener('loadeddata', r, { once: true }); v.addEventListener('error', r, { once: true }); setTimeout(r, 2500); } });
     }
-    this.logo = null;
-    if (client.logoMediaId) {
-      const img = new Image();
-      img.src = await mediaURL(client.logoMediaId);
-      await img.decode().catch(() => {});
-      this.logo = img;
-    }
-    this.invalidate();
-    this.T = Math.min(this.T, this.duration);
-    await this.seek(this.T);
   }
 
   invalidate() {
@@ -329,6 +335,68 @@ export class Player {
     }
     g.restore();
   }
+}
+
+// ---------------------------------------------------------------- prévia de estilo sem vídeo
+// Cena ilustrada (consultório desfocado + expert de jaleco) usada nas miniaturas dos modelos:
+// aparece na hora, em qualquer aparelho, mesmo antes de enviar um vídeo.
+const sceneCache = {};
+function sampleScene(side) {
+  if (sceneCache[side]) return sceneCache[side];
+  const W = 1280, H = 720;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  let gr = g.createLinearGradient(0, 0, W, H);
+  gr.addColorStop(0, '#d9e2df'); gr.addColorStop(0.55, '#b9c8c4'); gr.addColorStop(1, '#8c9e9a');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  // luz de janela e objetos desfocados ao fundo
+  const ox = side === 'right' ? 0.22 : 0.78;
+  const blob = (x, y, r, col) => { const rg = g.createRadialGradient(x, y, 0, x, y, r); rg.addColorStop(0, col); rg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = rg; g.fillRect(x - r, y - r, r * 2, r * 2); };
+  blob(W * ox, H * 0.28, 330, 'rgba(255,255,255,0.75)');
+  blob(W * (ox + 0.08), H * 0.72, 140, 'rgba(70,120,90,0.45)');
+  blob(W * (ox - 0.1), H * 0.6, 110, 'rgba(200,170,120,0.35)');
+  g.fillStyle = 'rgba(60,80,76,0.18)'; g.fillRect(W * ox - 190, H * 0.56, 380, 14);
+  // expert
+  const px = side === 'right' ? W * 0.68 : W * 0.32;
+  g.save();
+  g.shadowColor = 'rgba(0,0,0,0.25)'; g.shadowBlur = 40;
+  g.fillStyle = '#f4f6f6'; // jaleco
+  g.beginPath();
+  g.moveTo(px - 300, H); g.bezierCurveTo(px - 290, H * 0.72, px - 210, H * 0.62, px - 90, H * 0.6);
+  g.lineTo(px + 90, H * 0.6); g.bezierCurveTo(px + 210, H * 0.62, px + 290, H * 0.72, px + 300, H); g.closePath(); g.fill();
+  g.restore();
+  g.fillStyle = '#3d5a80'; // camisa
+  g.beginPath(); g.moveTo(px - 70, H * 0.6); g.lineTo(px, H * 0.84); g.lineTo(px + 70, H * 0.6); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.12)'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(px - 70, H * 0.6); g.lineTo(px - 20, H); g.moveTo(px + 70, H * 0.6); g.lineTo(px + 20, H); g.stroke();
+  g.strokeStyle = '#2c3e3b'; g.lineWidth = 7; // estetoscópio
+  g.beginPath(); g.moveTo(px - 95, H * 0.62); g.bezierCurveTo(px - 120, H * 0.85, px - 30, H * 0.9, px - 40, H * 0.98); g.stroke();
+  g.fillStyle = '#e2b394'; g.fillRect(px - 38, H * 0.5, 76, 70); // pescoço
+  g.beginPath(); g.ellipse(px, H * 0.37, 92, 116, 0, 0, Math.PI * 2); g.fill(); // rosto
+  g.fillStyle = '#3b2a22'; // cabelo
+  g.beginPath(); g.ellipse(px, H * 0.3, 100, 86, 0, Math.PI, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(px - 82, H * 0.38, 26, 70, 0.1, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(px + 82, H * 0.38, 26, 70, -0.1, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#2b2b2b'; // olhos e sorriso
+  g.beginPath(); g.ellipse(px - 32, H * 0.37, 8, 9, 0, 0, Math.PI * 2); g.ellipse(px + 32, H * 0.37, 8, 9, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#a5614d'; g.lineWidth = 5; g.lineCap = 'round';
+  g.beginPath(); g.arc(px, H * 0.42, 30, 0.2 * Math.PI, 0.8 * Math.PI); g.stroke();
+  return (sceneCache[side] = c);
+}
+
+// Desenha a prévia de um estilo (modelo, cores, legenda, destaque, nome + CRM) sobre a cena ilustrada.
+export function drawStylePreview(canvas, client, override = {}, { T = 4.6, title = 'Aula de exemplo' } = {}) {
+  const cl = { ...client, ...override };
+  const p = new Player(document.createElement('canvas'));
+  const word = (cl.keywords || [])[0] || 'destaque';
+  p.client = cl;
+  p.lesson = { title, clips: [{ srcId: '_', in: 0, out: 20 }], cards: [], words: {}, sources: [] };
+  p.starts = [0]; p.total = 20; p.T = T;
+  const words = ['Hoje', 'vamos', 'falar', 'sobre', word].map((w, i) => ({ w, s: T - 0.9 + i * 0.22, e: T - 0.7 + i * 0.22 }));
+  p.caps = [{ s: T - 1, e: T + 2, text: words.map((w) => w.w).join(' '), words }];
+  p.cardsT = [{ T: T - 1, dur: 4, text: word, sub: '' }];
+  p.frame = { img: sampleScene(cl.expertSide === 'right' ? 'right' : 'left'), w: 1280, h: 720 };
+  p.draw(canvas);
 }
 
 // ---------------------------------------------------------------- utilitários de desenho

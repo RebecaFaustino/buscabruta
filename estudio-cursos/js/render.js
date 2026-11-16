@@ -11,10 +11,10 @@ export function pickMime() {
   return opts.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
 }
 
-import { offlineCodecs, renderOffline } from './render-offline.js';
 
 // Escolhe o melhor método: quadro a quadro (WebCodecs) quando o navegador suporta; senão, gravação em tempo real.
 export async function renderLesson(player, preset, opts = {}) {
+  const { offlineCodecs, renderOffline } = await import('./render-offline.js');
   const codecs = await offlineCodecs(preset);
   if (codecs) {
     try {

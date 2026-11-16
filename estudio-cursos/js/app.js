@@ -3,7 +3,7 @@ import { state, save, load, uid, newClient, newCourse, newModule, newLesson, get
 import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
-import { Player } from './player.js';
+import { Player, drawStylePreview } from './player.js';
 import { SFX, playSfx } from './sfx.js';
 import { TEMPLATES, PALETTES, CAPTION_MODES, CARD_VARIANTS, resolveStyle } from './styles.js';
 import { renderLesson, extOf, pickMime } from './render.js';
@@ -33,8 +33,22 @@ export function toast(msg, kind = '') {
 const cap = (name) => (window.claude?.use ? window.claude.use(name).catch(() => null) : Promise.resolve(null));
 const SAVE_EXT = ['mp4', 'webm', 'mov', 'txt', 'json', 'md', 'csv', 'zip', 'pdf', 'png', 'jpg'];
 
+// Biblioteca de .zip: só é baixada quando alguém gera um pacote (deixa a abertura do app mais leve).
+let zipLoading;
+function needZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return (zipLoading ||= new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'vendor/jszip.min.js';
+    sc.onload = () => res(window.JSZip);
+    sc.onerror = () => { zipLoading = null; rej(new Error('Não foi possível carregar o gerador de .zip. Verifique a internet.')); };
+    document.head.appendChild(sc);
+  }));
+}
+
 async function download(blob, name) {
   let ext = name.split('.').pop().toLowerCase();
+  if (!SAVE_EXT.includes(ext)) await needZip().catch(() => null);
   if (!SAVE_EXT.includes(ext) && window.JSZip) {
     // .srt/.vtt não são aceitos pelo salvamento do claude.ai: entregamos dentro de um .zip
     const z = new JSZip();
@@ -73,12 +87,56 @@ function ask(msg, okLabel = 'Excluir') {
 // ======================= Navegação =======================
 let cur = '#/';
 try { cur = localStorage.getItem('ec-route') || '#/'; } catch {}
+// Histórico próprio: o botão "Voltar" da tela e o voltar do celular (Android) levam à tela anterior.
+const stack = [];
+let histOK = false, waitingPop = null;
+function setCur(hash) { cur = hash; try { localStorage.setItem('ec-route', hash); } catch {} }
 function go(hash) {
-  cur = hash;
-  try { localStorage.setItem('ec-route', hash); } catch {}
+  if (hash !== cur) {
+    stack.push(cur);
+    if (stack.length > 60) stack.shift();
+    try { history.pushState({ ec: hash }, ''); histOK = true; } catch { histOK = false; }
+  }
+  setCur(hash);
   document.body.classList.remove('menu-open');
   route();
   window.scrollTo(0, 0);
+}
+// Tela "mãe" de cada tela, usada quando não há histórico (ex.: app reaberto direto numa aula).
+function parentOf(hash) {
+  const [, page, a] = hash.split('/');
+  if (page === 'aula' || page === 'exportar') return getCourse(a)?.auto ? '#/' : '#/curso/' + a;
+  if (page === 'curso') return getCourse(a) ? '#/cliente/' + getCourse(a).clientId : '#/';
+  return '#/';
+}
+function stepBack() {
+  setCur(stack.pop() || parentOf(cur));
+  document.body.classList.remove('menu-open');
+  route();
+  window.scrollTo(0, 0);
+}
+function back() {
+  if (busyWork()) { toast('Aguarde terminar antes de sair desta tela.'); return; }
+  if (histOK && stack.length) {
+    history.back();
+    clearTimeout(waitingPop);
+    waitingPop = setTimeout(() => { waitingPop = null; stepBack(); }, 350); // se o navegador não avisar, volta mesmo assim
+  } else stepBack();
+}
+window.addEventListener('popstate', () => {
+  if (waitingPop) { clearTimeout(waitingPop); waitingPop = null; }
+  if (busyWork()) { try { history.pushState({ ec: cur }, ''); } catch {} toast('Aguarde terminar antes de sair desta tela.'); return; }
+  stepBack();
+});
+const busyWork = () => !!document.querySelector('#rProg:not([hidden]), #aProg:not([hidden]), #trProg:not([hidden]), .steps .run');
+function addBack() {
+  if (cur === '#/' || !cur || view.querySelector(':scope > .back-btn')) return;
+  const b = document.createElement('button');
+  b.className = 'back-btn';
+  b.type = 'button';
+  b.innerHTML = '<span aria-hidden="true">‹</span> Voltar';
+  b.onclick = back;
+  view.prepend(b);
 }
 document.addEventListener('click', (e) => {
   const a = e.target.closest('a[href^="#/"]');
@@ -92,13 +150,15 @@ function route() {
   if (editor) { editor.player.stop(); editor.dispose?.(); editor = null; }
   const [, page, a, b] = cur.split('/');
   renderSidebar();
-  if (page === 'cliente' && getClient(a)) return viewClient(getClient(a));
-  if (page === 'curso' && getCourse(a)) return viewCourse(getCourse(a));
-  if (page === 'aula' && getCourse(a)) return viewEditor(getCourse(a), b);
-  if (page === 'exportar' && getCourse(a)) return viewExport(getCourse(a));
-  if (page === 'novo') return viewAuto();
-  if (page === 'pronto' && getCourse(a)) return viewReady(getCourse(a), b);
-  viewHome();
+  document.body.dataset.page = page || 'inicio';
+  if (page === 'cliente' && getClient(a)) viewClient(getClient(a));
+  else if (page === 'curso' && getCourse(a)) viewCourse(getCourse(a));
+  else if (page === 'aula' && getCourse(a)) viewEditor(getCourse(a), b);
+  else if (page === 'exportar' && getCourse(a)) viewExport(getCourse(a));
+  else if (page === 'novo') viewAuto();
+  else if (page === 'pronto' && getCourse(a)) viewReady(getCourse(a), b);
+  else { if (cur !== '#/') setCur('#/'); viewHome(); }
+  addBack();
 }
 
 function renderSidebar() {
@@ -152,6 +212,7 @@ function viewHome() {
       <button class="card add-card" id="homeNewClient">+ Novo cliente</button>
     </section>`;
   $('#homeNewClient').onclick = () => $('#newClientBtn').click();
+  installHint(view);
 }
 
 // ======================= Edição automática (um toque) =======================
@@ -224,8 +285,7 @@ function viewAuto() {
     const lesson = newLesson($('#wTitle').value.trim() || file.name.replace(/\.[^.]+$/, ''));
     course.modules[0].lessons.push(lesson);
     save();
-    cur = `#/pronto/${course.id}/${lesson.id}`;
-    try { localStorage.setItem('ec-route', cur); } catch {}
+    setCur(`#/pronto/${course.id}/${lesson.id}`);
     renderSidebar();
     runAuto(course, lesson, client, file);
   }
@@ -313,6 +373,7 @@ async function runAuto(course, lesson, client, file) {
   try { lock?.release(); } catch {}
   toast('Aula editada!', 'ok');
   viewReady(course, lesson.id, true);
+  addBack();
 }
 
 async function describeLesson(smp, client, course, lesson) {
@@ -449,10 +510,11 @@ function viewClient(c) {
         <div class="style-panel" id="cStyle"></div>
         <div class="form">
           ${select('platform', 'Plataforma padrão', c.platform, Object.fromEntries(Object.entries(PLATFORMS).map(([k, v]) => [k, v.name])))}
-          <h3>Cortes secos</h3>
-          ${range('silenceDb', 'Limiar de silêncio (dB)', c.silenceDb, -60, -20, 1)}
-          ${range('minSilence', 'Pausa mínima para cortar (s)', c.minSilence, 0.15, 1.5, 0.05)}
-          ${range('padding', 'Respiro em cada corte (s)', c.padding, 0, 0.3, 0.01)}
+          <details class="grp"><summary><b>Ritmo dos cortes secos</b><small>avançado</small></summary><div class="grp-body">
+            ${range('silenceDb', 'Limiar de silêncio (dB)', c.silenceDb, -60, -20, 1)}
+            ${range('minSilence', 'Pausa mínima para cortar (s)', c.minSilence, 0.15, 1.5, 0.05)}
+            ${range('padding', 'Respiro em cada corte (s)', c.padding, 0, 0.3, 0.01)}
+          </div></details>
         </div>
       </section>
     </div>
@@ -1325,50 +1387,62 @@ function shade(hex, amt) {
 // ======================= Estilo do vídeo (modelos, paleta, sombras, legenda, destaques) =======================
 function stylePanelHTML(c) {
   const st = resolveStyle(c);
+  const tpl = TEMPLATES[c.template] || TEMPLATES.clinico;
+  let open = {};
+  try { open = JSON.parse(localStorage.getItem('ec-style-open') || '{}'); } catch {}
+  const grp = (id, title, sub, body, def = false) => `<details class="grp" data-grp="${id}" ${(open[id] ?? def) ? 'open' : ''}><summary><b>${title}</b><small>${sub}</small></summary><div class="grp-body">${body}</div></details>`;
   return `
-    <h3>Modelo de vídeo</h3>
-    <div class="tpl-grid">${Object.entries(TEMPLATES).map(([k, t]) => `
-      <button class="tpl ${k === (c.template || 'clinico') ? 'on' : ''}" data-tpl="${k}" type="button">
-        <canvas width="320" height="180" data-thumb="${k}"></canvas>
+    <div class="style-prev-wrap"><canvas class="style-prev" width="1280" height="720" data-prev></canvas><span class="style-prev-tag">Prévia · ${esc(tpl.name)}</span></div>
+    ${grp('modelo', 'Modelo de vídeo', esc(tpl.name), `<div class="tpl-grid">${Object.entries(TEMPLATES).map(([k, t]) => `
+      <button class="tpl ${k === (c.template || 'clinico') ? 'on' : ''}" data-tpl="${k}" type="button" aria-pressed="${k === (c.template || 'clinico')}">
+        <canvas width="480" height="270" data-thumb="${k}"></canvas>
         <b>${esc(t.name)}</b><small>${esc(t.ref)}</small>
-      </button>`).join('')}</div>
-    <h3>Paleta de cores</h3>
-    <div class="swatches">${PALETTES.map((p, i) => `
-      <button class="sw ${p.primary === st.primary && p.accent === st.accent ? 'on' : ''}" data-pal="${i}" type="button" title="${esc(p.name)}">
-        <span style="background:${p.primary}"></span><span style="background:${p.accent}"></span><small>${esc(p.name)}</small>
-      </button>`).join('')}</div>
-    <div class="row3">${color('primary', 'Principal', st.primary)}${color('accent', 'Destaque', st.accent)}${color('text', 'Texto', st.text)}</div>
-    ${range('shadow', 'Sombras', c.shadow ?? 0.6, 0, 1.5, 0.05)}
-    <h3>Legenda</h3>
-    ${select('captionStyle', 'Modelo de legenda', c.captionStyle || 'auto', CAPTION_MODES)}
-    ${range('captionScale', 'Tamanho da legenda', c.captionScale || 1, 0.7, 1.6, 0.05)}
-    ${select('captionPos', 'Posição', c.captionPos || 'bottom', { bottom: 'Rodapé', middle: 'Terço inferior' })}
-    <h3>Destaques</h3>
-    ${select('cardVariant', 'Modelo de destaque', c.cardVariant || 'auto', CARD_VARIANTS)}
-    <label>Etiqueta acima do destaque<input data-k="cardEyebrow" value="${esc(c.cardEyebrow ?? st.card.eyebrow ?? '')}" placeholder="Ex.: PONTO-CHAVE (vazio = sem etiqueta)"></label>
-    ${select('expertSide', 'Posição do expert', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}
-    <h3>Imagem</h3>
-    ${select('look', 'Cor da imagem', c.look || 'auto', { auto: 'Do modelo', ...Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])) })}
-    ${range('focusX', 'Centro do rosto (zoom e vertical)', c.focusX ?? 0.5, 0, 1, 0.01)}
-    <div class="checks">
-      ${check('cleanVoice', 'Voz limpa', c.cleanVoice)}
-      ${check('autoZoom', 'Zoom nos cortes', c.autoZoom)}
-      ${check('smoothZoom', 'Zoom suave contínuo', c.smoothZoom)}
-      ${check('openingTitle', 'Abertura com título', c.openingTitle)}
-      ${check('lowerThird', 'Nome + CRM', c.lowerThird)}
-      ${check('watermark', 'Logo no canto', c.watermark)}
-    </div>
-    ${sfxBlock(c)}`;
+      </button>`).join('')}</div>`, true)}
+    ${grp('cores', 'Cores e sombras', `<i class="mini-sw" style="background:${esc(st.primary)}"></i><i class="mini-sw" style="background:${esc(st.accent)}"></i>`, `
+      <div class="swatches">${PALETTES.map((p, i) => `
+        <button class="sw ${p.primary === st.primary && p.accent === st.accent ? 'on' : ''}" data-pal="${i}" type="button" title="${esc(p.name)}">
+          <span style="background:${p.primary}"></span><span style="background:${p.accent}"></span><small>${esc(p.name)}</small>
+        </button>`).join('')}</div>
+      <div class="row3">${color('primary', 'Principal', st.primary)}${color('accent', 'Destaque', st.accent)}${color('text', 'Texto', st.text)}</div>
+      ${range('shadow', 'Sombras', c.shadow ?? 0.6, 0, 1.5, 0.05)}`)}
+    ${grp('legenda', 'Legenda', esc(CAPTION_MODES[c.captionStyle || 'auto'] || ''), `
+      ${select('captionStyle', 'Modelo de legenda', c.captionStyle || 'auto', CAPTION_MODES)}
+      ${range('captionScale', 'Tamanho da legenda', c.captionScale || 1, 0.7, 1.6, 0.05)}
+      ${select('captionPos', 'Posição', c.captionPos || 'bottom', { bottom: 'Rodapé', middle: 'Terço inferior' })}`)}
+    ${grp('destaques', 'Destaques e posição do expert', esc(CARD_VARIANTS[c.cardVariant || 'auto'] || ''), `
+      ${select('cardVariant', 'Modelo de destaque', c.cardVariant || 'auto', CARD_VARIANTS)}
+      <label>Etiqueta acima do destaque<input data-k="cardEyebrow" value="${esc(c.cardEyebrow ?? st.card.eyebrow ?? '')}" placeholder="Ex.: PONTO-CHAVE (vazio = sem etiqueta)"></label>
+      ${select('expertSide', 'Posição do expert', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}`)}
+    ${grp('imagem', 'Imagem e elementos', 'cor, zoom, abertura, nome + CRM, logo', `
+      ${select('look', 'Cor da imagem', c.look || 'auto', { auto: 'Do modelo', ...Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])) })}
+      ${range('focusX', 'Centro do rosto (zoom e vertical)', c.focusX ?? 0.5, 0, 1, 0.01)}
+      <div class="checks">
+        ${check('cleanVoice', 'Voz limpa', c.cleanVoice)}
+        ${check('autoZoom', 'Zoom nos cortes', c.autoZoom)}
+        ${check('smoothZoom', 'Zoom suave contínuo', c.smoothZoom)}
+        ${check('openingTitle', 'Abertura com título', c.openingTitle)}
+        ${check('lowerThird', 'Nome + CRM', c.lowerThird)}
+        ${check('watermark', 'Logo no canto', c.watermark)}
+      </div>`)}
+    ${grp('sons', 'Efeitos sonoros', c.sfx ? 'ligados' : 'desligados', sfxBlock(c).replace('<h3>Efeitos sonoros</h3>', ''))}`;
 }
 
 function bindStylePanel(root, c, player, onChange) {
-  const changed = () => { onChange?.(); drawThumbs(root, c, player); };
+  const changed = () => { onChange?.(); drawThumbs(root, c); };
+  root.querySelectorAll('details.grp').forEach((d) => d.addEventListener('toggle', () => {
+    let open = {};
+    try { open = JSON.parse(localStorage.getItem('ec-style-open') || '{}'); } catch {}
+    open[d.dataset.grp] = d.open;
+    try { localStorage.setItem('ec-style-open', JSON.stringify(open)); } catch {}
+  }));
   root.querySelectorAll('[data-tpl]').forEach((b) => (b.onclick = () => {
     const t = TEMPLATES[b.dataset.tpl];
     Object.assign(c, { template: b.dataset.tpl, ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1 });
     save();
+    const y = window.scrollY;
     root.innerHTML = stylePanelHTML(c);
     bindStylePanel(root, c, player, onChange);
+    window.scrollTo(0, y);
     onChange?.();
     toast(`Modelo “${t.name}” aplicado`, 'ok');
   }));
@@ -1384,15 +1458,26 @@ function bindStylePanel(root, c, player, onChange) {
   }));
   bindForm(root, c, (k) => { if (k === 'cleanVoice') player?.refreshAudio(); if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
   bindSfxPreview(root, c, player);
-  drawThumbs(root, c, player);
+  drawThumbs(root, c);
 }
 
-function drawThumbs(root, c, player) {
-  if (!player?.lesson?.clips.length) return;
-  root.querySelectorAll('[data-thumb]').forEach((cv) => {
+// Prévias: a grande mostra o estilo atual; as miniaturas mostram cada modelo com as palavras-chave do cliente.
+// Usam uma cena ilustrada, então aparecem na hora (sem esperar vídeo) e funcionam em qualquer celular.
+let thumbJob = 0;
+function drawThumbs(root, c) {
+  const job = ++thumbJob;
+  const big = root.querySelector('[data-prev]');
+  if (big) drawStylePreview(big, c);
+  const list = [...root.querySelectorAll('[data-thumb]')];
+  const step = () => {
+    if (job !== thumbJob) return;
+    const cv = list.shift();
+    if (!cv) return;
     const t = TEMPLATES[cv.dataset.thumb];
-    player.drawSample(cv, { template: cv.dataset.thumb, ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1, openingTitle: false });
-  });
+    drawStylePreview(cv, c, { template: cv.dataset.thumb, ...t.palette, look: 'auto', captionStyle: 'auto', cardVariant: 'auto', cardEyebrow: null, captionScale: 1, openingTitle: false });
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 // ======================= Chat "Pedir ajuste" (Claude edita por você) =======================
@@ -1554,7 +1639,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
   }
 
   async function zip() {
-    if (!window.JSZip) return toast('Biblioteca de zip não carregou (sem internet?).', 'err');
+    try { await needZip(); } catch (e) { return toast(e.message, 'err'); }
     const btn = $('#zipBtn');
     btn.disabled = true; btn.textContent = 'Montando pacote…';
     const z = new JSZip();
@@ -1578,7 +1663,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
 
 // ======================= Boot =======================
 // Aviso de instalação na tela de início (só no celular, até a pessoa fechar).
-function installHint() {
+function installHint(host) {
   const mobile = /iphone|ipad|ipod|android/i.test(navigator.userAgent);
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   let dismissed = false;
@@ -1592,14 +1677,14 @@ function installHint() {
     : ios
       ? `<li>Toque no botão <b>Compartilhar</b> <span class="ico">□↑</span> na barra do Safari.</li><li>Role e toque em <b>Adicionar à Tela de Início</b>.</li><li>Toque em <b>Adicionar</b>. Pronto: o ícone aparece junto dos seus apps.</li>`
       : `<li>Toque nos <b>três pontinhos ⋮</b> no canto de cima do Chrome.</li><li>Toque em <b>Adicionar à tela inicial</b> (ou <b>Instalar app</b>).</li><li>Toque em <b>Adicionar</b>. Pronto: o ícone aparece junto dos seus apps.</li>`;
-  const d = document.createElement('div');
+  const d = document.createElement('details');
   d.className = 'install';
-  d.innerHTML = `<b>Coloque o Estúdio na tela de início</b><ol>${steps}</ol>
-    <div class="btn-row"><button class="ghost small" id="copyLink">Copiar link</button><button class="btn small" id="installOk">Já fiz / fechar</button></div>
+  d.innerHTML = `<summary><span>📲 Colocar o Estúdio na tela de início</span><button class="x" id="installOk" type="button" aria-label="Fechar aviso">×</button></summary><ol>${steps}</ol>
+    <div class="btn-row"><button class="ghost small" id="copyLink" type="button">Copiar link</button></div>
     <p class="hint">Link: <span class="sel">${link}</span></p>`;
-  view.before(d);
+  host.prepend(d);
   $('#copyLink').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Link copiado', 'ok'), () => toast('Selecione o link abaixo e copie.'));
-  $('#installOk').onclick = () => { try { localStorage.setItem('ec-install-ok', '1'); } catch {} d.remove(); };
+  $('#installOk').onclick = (e) => { e.preventDefault(); try { localStorage.setItem('ec-install-ok', '1'); } catch {} d.remove(); };
 }
 
 window.addEventListener('beforeunload', (e) => {
@@ -1646,13 +1731,14 @@ function setCloudStatus(st) {
 const busy = () => editor?.player?.playing || document.querySelector('#rProg:not([hidden]), #aProg:not([hidden]), .steps .run');
 
 (async () => {
-  installHint();
   await load();
   try { navigator.storage?.persist?.(); } catch {}
   route();
   // fontes dos modelos (Inter Tight, JetBrains Mono, Playfair, Anton): redesenha quando chegarem
   Promise.all(['Inter Tight', 'JetBrains Mono', 'Playfair Display', 'Anton', 'Inter'].map((f) => document.fonts.load(`700 40px "${f}"`).catch(() => {})))
     .then(() => { try { editor?.player?.draw(); } catch {} });
+  // Depois que a tela abriu, baixa em segundo plano o leitor de vídeo (fica pronto quando você enviar uma aula).
+  setTimeout(() => (window.requestIdleCallback || ((f) => f()))(() => { import('../vendor/mediabunny.min.mjs').catch(() => {}); import('./render-offline.js').catch(() => {}); }), 3500);
   if (state.storageError) toast('Este navegador não permite salvar dados (janela anônima?). O trabalho será perdido ao fechar.', 'err');
 
   // Nuvem ao vivo (quando aberto no claude.ai)
@@ -1668,5 +1754,6 @@ const busy = () => editor?.player?.playing || document.querySelector('#rProg:not
     syncMedia();
     setInterval(syncMedia, 90_000);
     cloudUsage().then((u) => u && console.info('Nuvem:', u));
+
   } else setCloudStatus({ state: 'off', text: 'Só neste aparelho' });
 })();
