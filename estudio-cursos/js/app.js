@@ -512,7 +512,7 @@ async function viewReady(course, lessonId, fresh = false) {
     const btn = $('#rChapGo');
     btn.disabled = true; btn.textContent = 'Criando…';
     try {
-      const txt = await makeChapters(lesson, await cap('sample'));
+      const txt = await makeChapters(lesson, await cap('sample'), client);
       if (!txt) { toast('Os capítulos precisam da legenda da aula.'); return; }
       lesson.chapters = txt; save();
       $('#rChap').textContent = txt;
@@ -644,7 +644,7 @@ function sliceLesson(lesson, a, b, title) {
 }
 
 // Capítulos com horário (formato aceito pelo YouTube e por players como Vimeo/Panda).
-async function makeChapters(lesson, smp) {
+async function makeChapters(lesson, smp, client) {
   const caps = timelineCaptions(lesson), D = lessonDur(lesson);
   if (!caps.length) return null;
   const mmss = (t) => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s).padStart(2, '0'); };
@@ -661,11 +661,21 @@ Responda só com JSON: [{"frase": índice, "titulo": "..."}]`, { modelTier: 'qui
       if (ok.length >= 2) { ok[0].frase = 0; return ok.map((x) => `${mmss(Number(x.frase) === 0 ? 0 : caps[Number(x.frase)].s)} ${String(x.titulo).trim()}`).join('\n'); }
     } catch (e) { console.warn('IA dos capítulos indisponível', e); }
   }
-  const out = [];
+  // sem IA: divide em partes iguais e dá a cada parte o nome da palavra-chave mais falada nela
+  // (o texto cru da transcrição pode ter palavras erradas, então não vira título)
+  const fold = (x) => String(x).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const kws = (client?.keywords || []).filter(Boolean);
+  const cap1 = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+  const out = [], used = new Set();
   for (let k = 0; k < n; k++) {
-    const t = (D * k) / n;
-    const c = caps.find((x) => x.s >= t - 0.01) || caps[caps.length - 1];
-    out.push(`${mmss(k === 0 ? 0 : c.s)} ${k === 0 ? 'Introdução' : c.text.split(/\s+/).slice(0, 6).join(' ').replace(/[,.;:]+$/, '')}`);
+    const t0 = (D * k) / n, t1 = (D * (k + 1)) / n;
+    const c = caps.find((x) => x.s >= t0 - 0.01) || caps[caps.length - 1];
+    const txt = fold(caps.filter((x) => x.s >= t0 - 0.01 && x.s < t1).map((x) => x.text).join(' '));
+    let best = null, bestN = 0;
+    for (const w of kws) { if (used.has(w)) continue; const m = txt.split(fold(w)).length - 1; if (m > bestN) { best = w; bestN = m; } }
+    if (best) used.add(best);
+    const title = k === 0 ? 'Introdução' : best ? cap1(best) : `Parte ${k + 1}`;
+    out.push(`${mmss(k === 0 ? 0 : c.s)} ${title}`);
   }
   return out.join('\n');
 }
@@ -902,7 +912,7 @@ async function viewEditor(course, lessonId) {
       <header class="ed-head">
         <div>
           <p class="eyebrow"><a href="#/cliente/${client.id}">${esc(client.name)}</a> / <a href="#/curso/${course.id}">${esc(course.title)}</a> / ${mi + 1}.${li + 1}</p>
-          <input class="ed-title" id="lesTitle" value="${esc(lesson.title)}">
+          <input class="ed-title" id="lesTitle" aria-label="Título da aula" value="${esc(lesson.title)}">
         </div>
         <div class="actions">
           <span class="stat" id="durStat"></span>
