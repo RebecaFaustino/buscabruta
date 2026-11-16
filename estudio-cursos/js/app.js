@@ -4,6 +4,7 @@ import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player } from './player.js';
+import { SFX, playSfx } from './sfx.js';
 import { renderLesson, extOf, pickMime } from './render.js';
 import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards } from './pipeline.js';
 
@@ -346,6 +347,7 @@ async function viewReady(course, lessonId, fresh = false) {
           <li><b>${lesson.cards.length}</b><span>destaques</span></li>
         </ul>
         <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+        <label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros <button class="ghost small" id="rHear" type="button">▶ Ouvir</button></label>
         <div id="rOut"></div>
         <div class="btn-row"><a class="ghost btn-ghost" href="#/aula/${course.id}/${lesson.id}">Ajustar detalhes</a><a class="ghost btn-ghost" href="#/novo">Editar outro vídeo</a></div>
         ${lesson.description ? `<details><summary>Descrição para a plataforma</summary><p class="desc">${esc(lesson.description).replace(/\n/g, '<br>')}</p><button class="ghost small" id="rCopy">Copiar descrição</button></details>` : ''}
@@ -361,6 +363,8 @@ async function viewReady(course, lessonId, fresh = false) {
   player.onTime(0);
   pb.onclick = () => { if (player.playing) player.stop(); else player.play(); pb.textContent = player.playing ? '❚❚' : '▶'; };
   $('#rPlat').onchange = (e) => { platform = e.target.value; drawOut(); };
+  $('#rSfx').onchange = (e) => { client.sfx = e.target.checked; lesson.render = null; save(); drawOut(); };
+  $('#rHear').onclick = (e) => { e.preventDefault(); player.ensureAudio(); playSfx(player.ctx, player.sfxBus, 'whoosh', client.sfxVol ?? 0.5); playSfx(player.ctx, player.sfxBus, 'pop', (client.sfxVol ?? 0.5) * 0.6, 0.18); };
   $('#rCopy') && ($('#rCopy').onclick = () => navigator.clipboard?.writeText(lesson.description).then(() => toast('Descrição copiada', 'ok'), () => toast('Selecione o texto e copie.')));
 
   const base = slug(lesson.title);
@@ -371,7 +375,7 @@ async function viewReady(course, lessonId, fresh = false) {
       ? `<div class="render-ok"><b>✓ Vídeo final pronto</b> · ${mb(r.size)} · ${r.ext.toUpperCase()}
           <div class="btn-row"><button class="btn" id="rDl">Baixar vídeo</button>${nWords ? '<button class="ghost" id="rSrt">Baixar legenda</button>' : ''}</div></div>`
       : `<button class="btn big full" id="rGo">Gerar vídeo final</button>
-         <p class="hint">Leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada.</p>
+         <p class="hint">${PLATFORMS[platform].w >= 3840 ? '4K' : PLATFORMS[platform].h + 'p'} · ${PLATFORMS[platform].fps} fps · leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada. ${esc(PLATFORMS[platform].note)}</p>
          <div class="progress" id="rProg" hidden><span></span><em></em></div>`;
     if (same) {
       $('#rDl').onclick = async () => download(await db.getBlob(r.mediaId), `${base}.${r.ext}`);
@@ -451,6 +455,7 @@ function viewClient(c) {
           ${range('silenceDb', 'Limiar de silêncio (dB)', c.silenceDb, -60, -20, 1)}
           ${range('minSilence', 'Pausa mínima para cortar (s)', c.minSilence, 0.15, 1.5, 0.05)}
           ${range('padding', 'Respiro em cada corte (s)', c.padding, 0, 0.3, 0.01)}
+          ${sfxBlock(c)}
         </div>
       </section>
     </div>
@@ -462,6 +467,7 @@ function viewClient(c) {
     </section>`;
 
   bindForm(view, c, () => { renderSidebar(); $('h1').textContent = c.name; });
+  bindSfxPreview(view, c);
   showLogo(c);
   $('#logoInput').onchange = async (e) => {
     const f = e.target.files[0];
@@ -505,6 +511,22 @@ function chipEditor(box, form, c, onChange = () => {}) {
   };
   draw();
   return draw;
+}
+
+// Bloco de efeitos sonoros com prévia ("Ouvir")
+const sfxBlock = (c) => `
+  <h3>Efeitos sonoros</h3>
+  ${check('sfx', 'Efeitos sonoros (whoosh nos destaques, sino na abertura)', c.sfx)}
+  ${range('sfxVol', 'Volume dos efeitos', c.sfxVol ?? 0.5, 0, 1, 0.05)}
+  <div class="btn-row sfx-row">${Object.entries(SFX).map(([k, v]) => `<button class="ghost small" data-sfx="${k}" type="button">▶ Ouvir ${esc(v.name.split(' (')[0])}</button>`).join('')}</div>`;
+let previewCtx;
+function bindSfxPreview(root, client, player) {
+  root.querySelectorAll('[data-sfx]').forEach((b) => (b.onclick = () => {
+    let ctx, out;
+    if (player) { player.ensureAudio(); ctx = player.ctx; out = player.sfxBus; }
+    else { previewCtx = previewCtx || new (window.AudioContext || window.webkitAudioContext)(); previewCtx.resume(); ctx = previewCtx; out = ctx.destination; }
+    playSfx(ctx, out, b.dataset.sfx, client.sfxVol ?? 0.5);
+  }));
 }
 
 // helpers de formulário
@@ -1204,7 +1226,9 @@ async function viewEditor(course, lessonId) {
         ${check('openingTitle', 'Abertura com título', client.openingTitle)}
         ${check('lowerThird', 'Nome + CRM', client.lowerThird)}
         ${check('watermark', 'Logo no canto', client.watermark)}
-      </div>`;
+      </div>
+      ${sfxBlock(client)}`;
+    bindSfxPreview(body, client, player);
     bindForm(body, client, (k) => { if (k === 'cleanVoice') player.refreshAudio(); lesson.render = null; player.draw(); drawTimeline(); });
   }
 

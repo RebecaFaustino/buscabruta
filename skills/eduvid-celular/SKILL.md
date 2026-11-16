@@ -53,6 +53,10 @@ Saídas em `entrega/`:
 - `<titulo>.srt`: legenda sincronizada com os cortes. Suba junto da aula na plataforma.
 - `capcut/`: vídeo limpo (sem legenda gravada) + `.srt` + `palavras-chave.txt`, para finalizar no CapCut.
 
+**4K 60 fps**: some `--resolucao 4k --fps 60` (3840×2160; vertical 2160×3840). Use quando ela pedir 4K ou "máxima qualidade". Avise que o arquivo fica ~4× maior e que a renderização demora mais (~5× a duração da aula). Se o vídeo original for 1080p/30, explique em uma linha que o 4K amplia a imagem e que os 60 fps repetem quadros: a nitidez real continua a do original.
+
+**Efeitos sonoros** (ligados por padrão): sino suave na abertura, tique quando entra o nome + CRM, whoosh + pop em cada destaque. Use `--volume-efeitos 0.3` para mais discretos ou `--sem-efeitos` para desligar. São sintetizados na hora: não precisa baixar nada.
+
 Opções úteis: `--formatos 16x9` (só a versão do curso, mais rápido), `--sem-zoom`, `--sem-abertura`, `--look natural|clinico|quente|vivo`, `--legenda nenhuma` (quando a plataforma vai exibir só o .srt), `--preset veryfast` (aulas longas; a qualidade fica quase igual).
 
 Tempo: a análise leva cerca de 1/5 da duração. A renderização leva perto de 1× a duração por formato. Para aulas acima de 20 min, avise antes ("vai levar uns X min").

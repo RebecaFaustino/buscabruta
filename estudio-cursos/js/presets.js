@@ -8,6 +8,8 @@ export const PLATFORMS = {
   memberkit: { name: 'Memberkit', w: 1920, h: 1080, fps: 30, vbr: 8_000_000, note: 'MP4 (via Panda/Vimeo/YouTube).' },
   youtube: { name: 'YouTube (não listado)', w: 1920, h: 1080, fps: 30, vbr: 10_000_000, note: 'MP4, ideal para hospedar e incorporar.' },
   reels:   { name: 'Reels / Shorts (divulgação)', w: 1080, h: 1920, fps: 30, vbr: 8_000_000, note: '9:16 vertical para teaser da aula.' },
+  master4k:{ name: '4K 60 fps (máxima qualidade)', w: 3840, h: 2160, fps: 60, vbr: 45_000_000, note: 'Arquivo grande (~4× o 1080p). Gera quadro a quadro, sem perder quadros, mas demora mais — no celular, prefira 1080p.' },
+  hd60:    { name: '1080p 60 fps', w: 1920, h: 1080, fps: 60, vbr: 12_000_000, note: 'Movimento mais fluido, arquivo ~1,5× maior.' },
   rascunho:{ name: 'Rascunho rápido 720p', w: 1280, h: 720, fps: 30, vbr: 3_000_000, note: 'Para aprovação do cliente.' },
 };
 

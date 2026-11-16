@@ -11,7 +11,25 @@ export function pickMime() {
   return opts.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
 }
 
-export async function renderLesson(player, preset, { onProgress, mute = true, signal } = {}) {
+import { offlineCodecs, renderOffline } from './render-offline.js';
+
+// Escolhe o melhor método: quadro a quadro (WebCodecs) quando o navegador suporta; senão, gravação em tempo real.
+export async function renderLesson(player, preset, opts = {}) {
+  const codecs = await offlineCodecs(preset);
+  if (codecs) {
+    try {
+      const blob = await renderOffline(player, preset, codecs, { onProgress: (f, msg) => opts.onProgress?.(f, msg), signal: opts.signal });
+      await player.seek(0);
+      return blob;
+    } catch (e) {
+      if (e?.name === 'AbortError') throw e;
+      console.warn('Exportação quadro a quadro falhou, usando gravação em tempo real:', e);
+    }
+  }
+  return renderRealtime(player, preset, opts);
+}
+
+async function renderRealtime(player, preset, { onProgress, mute = true, signal } = {}) {
   const canvas = document.createElement('canvas');
   canvas.width = preset.w; canvas.height = preset.h;
   const mainCanvas = player.canvas;

@@ -15,6 +15,7 @@ export async function load() {
   let s = null;
   try { s = await db.get('state'); } catch (e) { console.warn(e); state.storageError = true; }
   if (s) Object.assign(state, s);
+  for (const c of state.clients) { if (c.sfx === undefined) c.sfx = true; if (c.sfxVol === undefined) c.sfxVol = 0.5; }
   if (!state.clients.length) seed();
 }
 
@@ -37,7 +38,7 @@ export function newClient(over = {}) {
     expertSide: 'left', // expert à esquerda -> palavras-chave à direita
     keywords: [], captionStyle: 'karaoke', captionPos: 'bottom', look: 'clinico',
     platform: 'hotmart', lowerThird: true, watermark: true, openingTitle: true,
-    cleanVoice: true, silenceDb: -38, minSilence: 0.45, padding: 0.08, autoZoom: true,
+    cleanVoice: true, sfx: true, sfxVol: 0.5, silenceDb: -38, minSilence: 0.45, padding: 0.08, autoZoom: true,
     ...over,
   };
 }

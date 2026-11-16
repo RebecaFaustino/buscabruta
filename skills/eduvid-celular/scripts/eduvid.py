@@ -240,11 +240,11 @@ def build_ass(path, W, H, words, phrases, opt, total):
 
     # Cartões de palavra-chave do lado oposto ao expert
     lado = 'direita' if opt.lado == 'esquerda' else 'esquerda'
-    last, usos = -99, {}
+    last, usos, cartoes = -99, {}, []
     for w in words:  # no máximo 1 destaque a cada 20 s e até 3 aparições por palavra
         k = norm(w['w'])
         if is_kw(w['w'], kws) and w['s'] - last >= 20 and usos.get(k, 0) < 3 and w['s'] > (3.4 if opt.abertura else 0):
-            last = w['s']; usos[k] = usos.get(k, 0) + 1
+            last = w['s']; usos[k] = usos.get(k, 0) + 1; cartoes.append(w['s'])
             a, b = w['s'], min(total, w['s'] + opt.dur_cartao)
             txt = esc_ass(re.sub(r'[^\w\s-]', '', w['w']).upper())
             if vertical:
@@ -290,6 +290,47 @@ def build_ass(path, W, H, words, phrases, opt, total):
                     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
                     + '\n'.join(styles) + '\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
                     + '\n'.join(ev) + '\n', encoding='utf-8')
+    return cartoes
+
+
+def gerar_efeitos(path, total, cartoes, opt, sr=48000):
+    """Trilha de efeitos sonoros sintetizados (sino na abertura, tique no nome, whoosh + pop nos destaques)."""
+    try:
+        import numpy as np
+    except ImportError:
+        print('  ! numpy indisponível — sem efeitos sonoros'); return False
+    import wave
+    out = np.zeros(int((total + 2) * sr), dtype=np.float32)
+    rng = np.random.default_rng(7)
+    def put(sig, t):
+        i = int(t * sr)
+        if i >= len(out): return
+        n = min(len(sig), len(out) - i); out[i:i + n] += sig[:n]
+    def whoosh():
+        n = int(0.5 * sr); t = np.linspace(0, 1, n); x = rng.uniform(-1, 1, n)
+        lp = np.zeros(n); bp = np.zeros(n); a = 0.0; b = 0.0
+        k = 0.02 + 0.25 * t
+        for i in range(n):  # filtro que abre ao longo do som
+            a += k[i] * (x[i] - a); b += 0.5 * (a - b); lp[i] = a - b
+        return (lp * np.sin(np.pi * np.minimum(1, t * 1.15)) ** 2 * 1.6).astype(np.float32)
+    def pop():
+        t = np.arange(int(0.16 * sr)) / sr; f = np.maximum(200, 1100 - 2600 * t)
+        return (np.sin(np.cumsum(2 * np.pi * f / sr)) * np.exp(-t * 32) * 0.55).astype(np.float32)
+    def sino():
+        t = np.arange(int(1.6 * sr)) / sr
+        return ((np.sin(2*np.pi*880*t)*0.5 + np.sin(2*np.pi*1320*t)*0.25 + np.sin(2*np.pi*2640*t)*0.08) * np.exp(-t*3.2) * np.minimum(1, t*200) * 0.45).astype(np.float32)
+    def tique():
+        t = np.arange(int(0.08 * sr)) / sr
+        return ((np.sin(2*np.pi*2400*t)*0.6 + rng.uniform(-0.2, 0.2, len(t))) * np.exp(-t*70) * 0.5).astype(np.float32)
+    v = opt.volume_efeitos
+    if opt.abertura and opt.titulo: put(sino() * v * 0.8, 0.05)
+    if opt.nome: put(tique() * v * 0.7, 3.6 if opt.abertura else 0.6)
+    w, p = whoosh(), pop()
+    for t in cartoes: put(w * v, t); put(p * v * 0.6, t + 0.18)
+    pcm = (np.clip(out, -1, 1) * 32767).astype('<i2')
+    with wave.open(str(path), 'wb') as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(sr); f.writeframes(pcm.tobytes())
+    return True
 
 
 LOOKS = {
@@ -320,8 +361,9 @@ def cmd_renderizar(a):
     trechos = json.loads((pasta / 'trechos.json').read_text()) if not a.sem_cortes else [[0, info['dur']]]
     frases = json.loads((pasta / 'transcricao.json').read_text())
     a.palavras = [p.strip() for p in (a.palavras or '').split(',') if p.strip()]
-    fps = round(info['fps']) or 30
-    W, H = 1920, 1080
+    fps = a.fps or round(info['fps']) or 30
+    W, H = (3840, 2160) if a.resolucao == '4k' else (1920, 1080)
+    if a.resolucao == '4k' and a.preset == 'medium': a.preset = 'veryfast'  # 4K: mantém o tempo razoável
     fx = {'esquerda': 0.35, 'direita': 0.65, 'centro': 0.5}.get(a.lado, 0.5) if a.foco is None else a.foco
     (pasta / 'seg').mkdir(exist_ok=True)
     jobs = [(video, i, s, e, (1.12 if (i % 2 and not a.sem_zoom) else 1.0), fx, W, H, fps, pasta) for i, (s, e) in enumerate(trechos)]
@@ -348,20 +390,28 @@ def cmd_renderizar(a):
     enc = ['-c:v', 'libx264', '-preset', a.preset, '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
            '-c:a', 'aac', '-b:a', '160k', '-ar', '48000']
     resultados = []
+    sfx_wav = pasta / 'efeitos.wav'
+    def sfx_in(cartoes):
+        ok = a.efeitos and gerar_efeitos(sfx_wav, total, cartoes, a)
+        sfx_in.on = bool(ok)
+        return ['-i', str(sfx_wav)] if ok else []
+    def audio_graph():
+        return f"[0:a]{VOZ}[voz];[voz][1:a]amix=inputs=2:normalize=0:duration=first[a]" if sfx_in.on else f"[0:a]{VOZ}[a]"
     if '16x9' in a.formatos:
         ass = pasta / 'leg_16x9.ass'
-        build_ass(ass, W, H, words, phrases, a, total)
-        f = out / f'{nome}_16x9.mp4'
-        print('Gerando versão 16:9 (plataformas de curso)…', flush=True)
-        run(['ffmpeg', '-y', '-v', 'error', '-i', str(mont), '-vf', f"ass={ass}{fdir}{look}", '-af', VOZ, *enc, '-crf', '20', str(f)])
+        cartoes = build_ass(ass, W, H, words, phrases, a, total)
+        f = out / f'{nome}_16x9{"_4k" if W > 1920 else ""}{"_60fps" if fps >= 50 else ""}.mp4'
+        print(f'Gerando versão 16:9 ({W}x{H}, {fps} fps)…', flush=True)
+        run(['ffmpeg', '-y', '-v', 'error', '-i', str(mont), *sfx_in(cartoes), '-filter_complex', f"[0:v]ass={ass}{fdir}{look}[v];{audio_graph()}", '-map', '[v]', '-map', '[a]', *enc, '-crf', '20', str(f)])
         resultados.append(f)
     if '9x16' in a.formatos:
         ass = pasta / 'leg_9x16.ass'
-        build_ass(ass, 1080, 1920, words, phrases_v, a, total)
+        Wv, Hv = (2160, 3840) if W > 1920 else (1080, 1920)
+        cartoes_v = build_ass(ass, Wv, Hv, words, phrases_v, a, total)
         f = out / f'{nome}_9x16_celular.mp4'
         print('Gerando versão vertical 9:16 (celular / Reels)…', flush=True)
-        vf = f"crop=ih*9/16:ih:(iw-ih*9/16)*{fx}:0,scale=1080:1920,setsar=1,ass={ass}{fdir}{look}"
-        run(['ffmpeg', '-y', '-v', 'error', '-i', str(mont), '-vf', vf, '-af', VOZ, *enc, '-crf', '23', str(f)])
+        vf = f"crop=ih*9/16:ih:(iw-ih*9/16)*{fx}:0,scale={Wv}:{Hv},setsar=1,ass={ass}{fdir}{look}"
+        run(['ffmpeg', '-y', '-v', 'error', '-i', str(mont), *sfx_in(cartoes_v), '-filter_complex', f"[0:v]{vf}[v];{audio_graph()}", '-map', '[v]', '-map', '[a]', *enc, '-crf', '23', str(f)])
         resultados.append(f)
     if a.capcut:
         cdir = out / 'capcut'
@@ -401,6 +451,10 @@ def main():
     rd.add_argument('--sem-cortes', action='store_true'); rd.add_argument('--sem-abertura', dest='abertura', action='store_false')
     rd.add_argument('--dur-cartao', type=float, default=2.8)
     rd.add_argument('--preset', default='medium')
+    rd.add_argument('--resolucao', default='1080', choices=['1080', '4k'], help='4k = 3840x2160 (2160x3840 na vertical)')
+    rd.add_argument('--fps', type=int, help='quadros por segundo da saída (ex.: 60); padrão = o do vídeo original')
+    rd.add_argument('--sem-efeitos', dest='efeitos', action='store_false', help='não adicionar efeitos sonoros')
+    rd.add_argument('--volume-efeitos', type=float, default=0.5)
     a = p.parse_args()
     {'analisar': cmd_analisar, 'renderizar': cmd_renderizar}[a.cmd](a)
 

@@ -2,6 +2,7 @@
 import { db } from './db.js';
 import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
+import { playSfx } from './sfx.js';
 
 const urlCache = new Map(); // mediaId -> objectURL
 export async function mediaURL(mediaId) {
@@ -23,6 +24,17 @@ function videoShelf() {
     document.body.appendChild(shelf);
   }
   return shelf;
+}
+
+// Tratamento de voz (passa-alta, menos "embolado", mais presença, compressor). Usado ao vivo e na exportação.
+export function voiceChain(ctx, out) {
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 85;
+  const mud = ctx.createBiquadFilter(); mud.type = 'peaking'; mud.frequency.value = 300; mud.gain.value = -2.5; mud.Q.value = 1;
+  const pres = ctx.createBiquadFilter(); pres.type = 'peaking'; pres.frequency.value = 3200; pres.gain.value = 3; pres.Q.value = 0.9;
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -26; comp.ratio.value = 3.5; comp.attack.value = 0.005; comp.release.value = 0.2; comp.knee.value = 8;
+  const makeup = ctx.createGain(); makeup.gain.value = 1.6;
+  hp.connect(mud).connect(pres).connect(comp).connect(makeup).connect(out);
+  return hp;
 }
 
 const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
@@ -108,13 +120,11 @@ export class Player {
     this.dest = ctx.createMediaStreamDestination();
     this.master.connect(this.speaker).connect(ctx.destination);
     this.master.connect(this.dest);
-    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 85;
-    const mud = ctx.createBiquadFilter(); mud.type = 'peaking'; mud.frequency.value = 300; mud.gain.value = -2.5; mud.Q.value = 1;
-    const pres = ctx.createBiquadFilter(); pres.type = 'peaking'; pres.frequency.value = 3200; pres.gain.value = 3; pres.Q.value = 0.9;
-    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -26; comp.ratio.value = 3.5; comp.attack.value = 0.005; comp.release.value = 0.2; comp.knee.value = 8;
-    const makeup = ctx.createGain(); makeup.gain.value = 1.6;
-    hp.connect(mud).connect(pres).connect(comp).connect(makeup).connect(this.master);
-    this.chainIn = hp;
+    // efeitos sonoros: entram no que você ouve e no vídeo exportado, sem passar pelo tratamento de voz
+    this.sfxBus = ctx.createGain();
+    this.sfxBus.connect(this.speaker);
+    this.sfxBus.connect(this.dest);
+    this.chainIn = voiceChain(ctx, this.master);
     for (const v of this.videos.values()) this.wireAudio(v);
   }
 
@@ -177,7 +187,9 @@ export class Player {
       await new Promise((res) => {
         const tick = () => {
           if (!this.playing) return res();
+          const prevT = this.T;
           this.T = this.starts[i] + Math.max(0, v.currentTime - c.in);
+          this.cueSfx(prevT, this.T);
           this.draw();
           this.onTime(this.T);
           if (v.currentTime >= c.out - 0.015 || v.ended) return res();
@@ -192,6 +204,17 @@ export class Player {
     if (prevV) prevV.pause();
     if (this.playing) { this.T = this.duration; this.playing = false; }
     this.onTime(this.T);
+  }
+
+  // Toca os efeitos cujo momento foi cruzado entre dois quadros.
+  cueSfx(a, b) {
+    const cl = this.client;
+    if (!cl?.sfx || !this.ctx || b <= a || b - a > 0.5) return;
+    const vol = cl.sfxVol ?? 0.5;
+    const hit = (t) => t > a && t <= b;
+    if (cl.openingTitle && hit(0.05)) playSfx(this.ctx, this.sfxBus, 'sino', vol * 0.8);
+    if (cl.lowerThird && hit(3.4)) playSfx(this.ctx, this.sfxBus, 'tique', vol * 0.7);
+    for (const k of this.cardsT || []) if (hit(k.T)) { playSfx(this.ctx, this.sfxBus, 'whoosh', vol); playSfx(this.ctx, this.sfxBus, 'pop', vol * 0.6, 0.18); }
   }
 
   // ---------- Composição ----------
@@ -210,12 +233,15 @@ export class Player {
     }
     const T = this.T;
     const i = this.clipAt(T), c = this.lesson.clips[i];
-    const v = this.videos.get(c.srcId);
+    // na exportação quadro a quadro, o quadro vem decodificado (this.frame) em vez do <video>
+    const fr = this.frame;
+    const v = fr ? null : this.videos.get(c.srcId);
+    const img = fr ? fr.img : v;
     const local = (T - this.starts[i]) / Math.max(0.001, c.out - c.in);
-    if (v && v.videoWidth) {
+    if (img && (fr ? fr.w : v.videoWidth)) {
       let zoom = c.zoom || 1;
       if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
-      const vw = v.videoWidth, vh = v.videoHeight;
+      const vw = fr ? fr.w : v.videoWidth, vh = fr ? fr.h : v.videoHeight;
       const s = Math.max(W / vw, H / vh) * zoom;
       const dw = vw * s, dh = vh * s;
       const fx = cl.focusX ?? 0.5, fy = 0.38;
@@ -224,7 +250,7 @@ export class Player {
       let dx = W * tx - fx * dw, dy = H * fy - fy * dh;
       dx = Math.min(0, Math.max(W - dw, dx)); dy = Math.min(0, Math.max(H - dh, dy));
       g.filter = LOOKS[cl.look]?.filter || 'none';
-      g.drawImage(v, dx, dy, dw, dh);
+      g.drawImage(img, dx, dy, dw, dh);
       g.filter = 'none';
     }
     const u = H / 1080; // unidade relativa
