@@ -1262,7 +1262,33 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
 }
 
 // ======================= Boot =======================
+// Aviso de instalação na tela de início (só no celular, até a pessoa fechar).
+function installHint() {
+  const mobile = /iphone|ipad|ipod|android/i.test(navigator.userAgent);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('ec-install-ok') === '1'; } catch {}
+  if (!mobile || standalone || dismissed) return;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const inApp = /claude/i.test(navigator.userAgent);
+  const link = 'https://claude.ai/artifact/TktWxL7iosS8x65jYTAH69';
+  const steps = inApp
+    ? `<li>Toque em <b>Copiar link</b> abaixo.</li><li>Abra o <b>${ios ? 'Safari' : 'Chrome'}</b>, cole o link na barra de endereço e entre na sua conta Claude.</li><li>Lá, siga o aviso que vai aparecer de novo.</li>`
+    : ios
+      ? `<li>Toque no botão <b>Compartilhar</b> <span class="ico">□↑</span> na barra do Safari.</li><li>Role e toque em <b>Adicionar à Tela de Início</b>.</li><li>Toque em <b>Adicionar</b>. Pronto: o ícone aparece junto dos seus apps.</li>`
+      : `<li>Toque nos <b>três pontinhos ⋮</b> no canto de cima do Chrome.</li><li>Toque em <b>Adicionar à tela inicial</b> (ou <b>Instalar app</b>).</li><li>Toque em <b>Adicionar</b>. Pronto: o ícone aparece junto dos seus apps.</li>`;
+  const d = document.createElement('div');
+  d.className = 'install';
+  d.innerHTML = `<b>Coloque o Estúdio na tela de início</b><ol>${steps}</ol>
+    <div class="btn-row"><button class="ghost small" id="copyLink">Copiar link</button><button class="btn small" id="installOk">Já fiz / fechar</button></div>
+    <p class="hint">Link: <span class="sel">${link}</span></p>`;
+  view.before(d);
+  $('#copyLink').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Link copiado', 'ok'), () => toast('Selecione o link abaixo e copie.'));
+  $('#installOk').onclick = () => { try { localStorage.setItem('ec-install-ok', '1'); } catch {} d.remove(); };
+}
+
 (async () => {
+  installHint();
   await load();
   try { navigator.storage?.persist?.(); } catch {}
   route();

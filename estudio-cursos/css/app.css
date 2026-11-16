@@ -208,6 +208,12 @@ main:has(.editor) { padding: 18px 22px 18px; }
 .toast.ok { background: var(--ok); color: #fff; } .toast.err { background: var(--danger); color: #fff; }
 @keyframes up { from { transform: translateY(8px); opacity: 0; } }
 
+/* aviso de instalação */
+.install { grid-column: 1 / -1; margin: 12px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px)); padding: 14px 16px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); font-size: 14px; }
+.install ol { margin: 8px 0 12px; padding-left: 20px; display: grid; gap: 4px; }
+.install .ico { display: inline-block; font-size: 12px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
+.install .sel { user-select: all; word-break: break-all; color: var(--ink-2); }
+
 /* confirmação */
 .modal { position: fixed; inset: 0; background: rgba(8,20,20,.45); display: grid; place-items: center; z-index: 60; padding: 16px; }
 .modal-box { background: var(--surface); border-radius: 14px; padding: 20px; max-width: 380px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
