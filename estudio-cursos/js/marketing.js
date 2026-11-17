@@ -36,7 +36,12 @@ export function applyRow(c, r) {
   if (name) c.name = name;
   if (txt(r['Especialidade'])) c.specialty = txt(r['Especialidade']);
   if (txt(r['Registro (CRM/RQE)'])) c.crm = txt(r['Registro (CRM/RQE)']);
-  if (hex(r['Cor principal'])) c.primary = hex(r['Cor principal']);
+  if (hex(r['Cor principal'])) {
+    c.primary = hex(r['Cor principal']);
+    // texto sobre a cor principal: branco em cor escura, quase preto em cor clara
+    const n = parseInt(c.primary.slice(1), 16), L = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    c.text = L > 0.6 ? '#1f1530' : '#ffffff';
+  }
   if (hex(r['Cor de destaque'])) c.accent = hex(r['Cor de destaque']);
   const kw = txt(r['Palavras-chave']).split(/[,;\n]/).map((s) => s.trim()).filter(Boolean);
   if (kw.length) c.keywords = [...new Set(kw)];

@@ -694,10 +694,11 @@ function drawCaptions(g, caps, T, W, H, u, st, cl) {
   }
   let fs = (lb ? Math.min(cs.size, lb / u * 0.42) : cs.size) * u;
   setFont(g, st, cs, fs);
-  const space = g.measureText(' ').width;
+  // espaço entre palavras: fontes condensadas (ex.: Anton) têm espaço estreito demais, e no modo palavra a ativa cresce 14%
+  let space = 0;
   const parts = words.map((w) => ({ ...w, txt: cs.upper ? w.w.toUpperCase() : w.w }));
   let total = 0;
-  const measure = () => { parts.forEach((pp) => (pp.wid = g.measureText(pp.txt).width)); total = parts.reduce((a, pp) => a + pp.wid, 0) + space * (parts.length - 1); };
+  const measure = () => { space = Math.max(g.measureText(' ').width, fs * (cs.mode === 'palavra' ? 0.5 : 0.24)); parts.forEach((pp) => (pp.wid = g.measureText(pp.txt).width)); total = parts.reduce((a, pp) => a + pp.wid, 0) + space * (parts.length - 1); };
   measure();
   while (total > W * 0.86 && fs > 16) { fs -= 2; setFont(g, st, cs, fs); measure(); }
   let x = W / 2 - total / 2;
@@ -726,7 +727,7 @@ function drawCaptions(g, caps, T, W, H, u, st, cl) {
     }
     let color = base;
     if (cs.mode === 'palavra') color = active || kw ? st.accent : '#FFFFFF';
-    else if (cs.active === 'bg' && active && cs.mode === 'karaoke') color = '#FFFFFF';
+    else if (cs.active === 'bg' && active && cs.mode === 'karaoke') color = onColor(st.accent); // texto legível sobre a cor de destaque (ex.: lima, azul-claro)
     else if ((cs.active === 'color' && active && cs.mode !== 'limpa') || kw) color = cs.box === 'light' && !kw ? st.accent : st.accent;
     g.fillStyle = color;
     if (cs.mode === 'palavra' && T < pp.s) g.globalAlpha = 0.55;
@@ -735,4 +736,13 @@ function drawCaptions(g, caps, T, W, H, u, st, cl) {
     x += pp.wid + space;
   }
   resetLS(g);
+}
+
+// Preto ou branco, o que for mais legível sobre a cor dada.
+function onColor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return '#FFFFFF';
+  const n = parseInt(m[1], 16), lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return L > 0.4 ? '#111111' : '#FFFFFF';
 }
