@@ -446,3 +446,14 @@ p { text-wrap: pretty; }
 .mkt-row { display: grid; grid-template-columns: minmax(0, 120px) minmax(0, 1fr); gap: 10px; font-size: 13px; }
 .mkt-row dt { color: var(--ink-3); } .mkt-row dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 700px) { .mkt-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
+.warn-banner { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); font-size: 13px; }
+/* muitos clientes: grade compacta no celular */
+.mkt-tag { color: var(--ok); font-weight: 600; }
+@media (max-width: 700px) {
+  .clients-grid.dense { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .clients-grid.dense .card { padding: 10px; }
+  .clients-grid.dense .client-prev { border-radius: 8px; }
+  .clients-grid.dense h3 { font-size: 14px; line-height: 1.25; margin-top: 8px; overflow-wrap: anywhere; }
+  .clients-grid.dense p { font-size: 12px; overflow-wrap: anywhere; }
+  .clients-grid.dense .add-card { grid-column: 1 / -1; min-height: 56px; }
+}

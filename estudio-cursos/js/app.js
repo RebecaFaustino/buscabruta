@@ -1,6 +1,6 @@
 import { db } from './db.js';
 import { state, save, load, uid, newClient, newCourse, newModule, newLesson, getClient, getCourse, findLesson, briefOf } from './state.js';
-import { startMarketing, refreshMarketing, onMkt, mkt, MKT_URL } from './marketing.js';
+import { startMarketing, refreshMarketing, onMkt, mkt, MKT_URL, forbiddenIn } from './marketing.js';
 import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
@@ -203,14 +203,14 @@ function viewHome() {
       ${l.render ? '<span class="tag ok strong">pronta</span>' : ''}
       <a class="btn small ghost" href="#/pronto/${c.id}/${l.id}">Abrir</a></li>`).join('')}</ul>` : ''}
     <h2 class="section-title">Clientes</h2>
-    <section class="grid">
+    <section class="grid clients-grid ${state.clients.length > 3 ? 'dense' : ''}">
       ${state.clients.map((c) => {
         const cs = state.courses.filter((k) => k.clientId === c.id);
         return `<a class="card client-card" href="#/cliente/${c.id}">
           <canvas class="client-prev" width="640" height="360" data-cprev="${c.id}"></canvas>
           <h3>${esc(c.name)}</h3>
           <p>${esc(c.specialty || '—')} ${c.crm ? '· ' + esc(c.crm) : ''}</p>
-          <p class="muted">${pl(cs.length, 'curso', 'cursos')}</p>
+          <p class="muted">${pl(cs.length, 'curso', 'cursos')}${c.mkt ? ' · <span class="mkt-tag">Marketing ✓</span>' : ''}</p>
         </a>`;
       }).join('')}
       <button class="card add-card" id="homeNewClient">+ Novo cliente</button>
@@ -418,6 +418,7 @@ async function viewReady(course, lessonId, fresh = false) {
           <li><b>${nWords ? '✓' : '—'}</b><span>legenda</span></li>
           <li><b>${lesson.cards.length}</b><span>destaques</span></li>
         </ul>
+        ${(() => { const bad = forbiddenIn(client, timelineCaptions(lesson).map((c) => c.text).join(' ')); return bad.length ? `<p class="banner warn-banner">⚠ A legenda tem ${bad.length === 1 ? 'um termo' : 'termos'} que ${esc(client.name)} não usa: <b>${esc(bad.join(', '))}</b>. Toque em “Ajustar cortes e legenda” ou peça no chat para trocar.</p>` : ''; })()}
         <div class="row-2">
           <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
           <div class="sfx-line"><label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros</label><button class="ghost small" id="rHear" type="button">▶ Ouvir</button></div>
@@ -702,7 +703,8 @@ function bindMktPanel(c) {
 }
 function onMktChange(list) {
   const names = list.map((x) => x.client.name);
-  toast(list.some((x) => x.isNew) && list.length === 1 ? `Novo cliente do Estúdio de Marketing: ${names[0]}` : `Perfil atualizado do Estúdio de Marketing: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`, 'ok');
+  const nNew = list.filter((x) => x.isNew).length;
+  toast(list.length === 1 ? (nNew ? `Novo cliente do Estúdio de Marketing: ${names[0]}` : `Perfil de ${names[0]} atualizado do Estúdio de Marketing`) : `Estúdio de Marketing: ${nNew ? pl(nNew, 'cliente novo', 'clientes novos') : pl(list.length, 'perfil atualizado', 'perfis atualizados')}`, 'ok');
   // só redesenha telas de cadastro; no editor, só atualiza a lista e a prévia (sem perder a posição)
   if (!busyWork() && (cur === '#/' || cur === '' || cur.startsWith('#/cliente/'))) route();
   else { renderSidebar(); try { editor?.player?.draw(); } catch {} }

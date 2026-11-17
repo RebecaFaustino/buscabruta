@@ -2,6 +2,7 @@
 // (preenchida pelo ChatGPT/Estúdio de Marketing) e aplica cores, modelo, palavras-chave e particularidades
 // no perfil de cada cliente. Atualiza sozinho enquanto o app está aberto.
 import { state, save, newClient } from './state.js';
+import { TEMPLATES } from './styles.js';
 
 export const MKT_SOURCE = 'collection://41a6c06c-d7f3-81e9-aab7-000bfbca9205';
 export const MKT_URL = 'https://app.notion.com/p/41a6c06cd7f381ba9470fd0dfd1ecc6d';
@@ -69,7 +70,16 @@ function merge(rows, onChange) {
     if (c && c.mkt?.at && c.mkt.at === txt(r['Atualizado em'])) continue; // já está em dia
     const isNew = !c;
     if (isNew) { c = newClient(); state.clients.push(c); }
-    if (applyRow(c, r) || isNew) changed.push({ client: c, isNew });
+    const had = applyRow(c, r);
+    // cliente novo sem cores definidas: usa a paleta do modelo escolhido (fica coerente até a paleta ser confirmada)
+    if (isNew && !hex(r['Cor principal']) && TEMPLATES[c.template]?.palette) Object.assign(c, { primary: TEMPLATES[c.template].palette.primary.toLowerCase(), accent: TEMPLATES[c.template].palette.accent.toLowerCase(), text: TEMPLATES[c.template].palette.text.toLowerCase() });
+    if (had || isNew) changed.push({ client: c, isNew });
+  }
+  // chegaram clientes reais: tira o cliente de exemplo, se ninguém usou (sem vídeo em nenhuma aula)
+  if (changed.some((x) => x.isNew)) {
+    const demo = state.clients.find((c) => c.name === 'Dra. Exemplo Silva' && c.crm === 'CRM-SP 000000' && !c.mkt);
+    const used = demo && state.courses.some((k) => k.clientId === demo.id && k.modules.some((m) => m.lessons.some((l) => l.sources?.length)));
+    if (demo && !used) { state.clients = state.clients.filter((c) => c !== demo); state.courses = state.courses.filter((k) => k.clientId !== demo.id); }
   }
   if (changed.length) { save(); onChange?.(changed); }
   return changed;
@@ -122,4 +132,11 @@ export async function refreshMarketing(onChange) {
   } catch (e) {
     set(e?.code === 'server_not_connected' ? 'need' : 'err', e?.code === 'server_not_connected' ? 'Conecte o Notion em claude.ai → Configurações → Conectores' : 'Não foi possível ler o Notion agora');
   }
+}
+
+// Termos que o cliente não usa e que aparecem na legenda da aula.
+export function forbiddenIn(c, text) {
+  const list = String(c?.mkt?.proibidas || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+  const t = ' ' + fold(text) + ' ';
+  return list.filter((w) => { const f = fold(w); return f && t.includes(' ' + f + ' '); });
 }
