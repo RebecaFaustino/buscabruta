@@ -404,6 +404,39 @@ def encode_segment(args):
     return out.with_suffix('.mov')
 
 
+def _toks(t):
+    return [w for w in re.sub(r'[^a-z0-9 ]', ' ', unicodedata.normalize('NFD', t).encode('ascii', 'ignore').decode().lower()).split() if w]
+
+
+def achar_repeticoes(frases):
+    """Frase regravada: uma frase seguida (até 2 frases depois, até 12 s) por outra que começa igual ou diz quase o mesmo.
+    Sai a tentativa errada (do início dela até o início da boa)."""
+    out, i = [], 0
+    while i < len(frases) - 1:
+        A = _toks(frases[i].get('texto') or frases[i].get('text', ''))
+        hit = None
+        if len(A) >= 3:
+            for j in (i + 1, i + 2):
+                if j >= len(frases): break
+                B = _toks(frases[j].get('texto') or frases[j].get('text', ''))
+                if len(B) < 3 or frases[j]['s'] - frases[i]['e'] > 12: continue
+                sa, sb = set(A), set(B)
+                sim = len(sa & sb) / min(len(sa), len(sb))
+                if (A[:3] == B[:3] and sim >= 0.5) or sim >= 0.8: hit = j; break
+        if hit: out.append((frases[i]['s'], frases[hit]['s'])); i = hit
+        else: i += 1
+    return out
+
+
+def tirar_intervalo(trechos, r0, r1):
+    novo = []
+    for s, e in trechos:
+        if r1 <= s or r0 >= e: novo.append([s, e]); continue
+        if r0 - s > 0.08: novo.append([s, r0])
+        if e - r1 > 0.08: novo.append([r1, e])
+    return novo
+
+
 def cmd_renderizar(a):
     video, pasta = Path(a.video).resolve(), Path(a.pasta).resolve()
     info = json.loads((pasta / 'info.json').read_text())
@@ -413,6 +446,10 @@ def cmd_renderizar(a):
         trechos = [[max(s, t0), min(e, t1)] for s, e in trechos if min(e, t1) - max(s, t0) > 0.05]
         if not trechos: raise SystemExit('Nenhuma fala dentro do --trecho informado.')
     frases = json.loads((pasta / 'transcricao.json').read_text())
+    if a.sem_repeticoes:
+        rep = achar_repeticoes(frases)
+        for r0, r1 in rep: trechos = tirar_intervalo(trechos, r0, r1)
+        print(f'  {len(rep)} repetição(ões) de gravação removida(s)', flush=True)
     a.palavras = [p.strip() for p in (a.palavras or '').split(',') if p.strip()]
     fps = a.fps or round(info['fps']) or 30
     W, H = (3840, 2160) if a.resolucao == '4k' else (1920, 1080)
@@ -510,6 +547,7 @@ def main():
     rd.add_argument('--volume-efeitos', type=float, default=0.5)
     rd.add_argument('--trilha', default='nenhuma', choices=['nenhuma', *TRILHAS], help='trilha de fundo composta na hora (sem direitos autorais)')
     rd.add_argument('--volume-trilha', type=float, default=0.5, help='0 a 1 (0.5 = baixinha sob a voz)')
+    rd.add_argument('--sem-repeticoes', action='store_true', help='remove frases regravadas (fica só a última tentativa)')
     rd.add_argument('--trecho', help='inicio,fim em segundos do vídeo ORIGINAL: renderiza só esse pedaço (Reels)')
     a = p.parse_args()
     {'analisar': cmd_analisar, 'renderizar': cmd_renderizar}[a.cmd](a)

@@ -21,3 +21,4 @@ Formato de cada linha: data — quem — o que foi feito ou decidido.
 - 2026-11 — Claude — v14: app lê ao vivo (conector Notion, a cada 1 min) a tabela Notion "Clientes — estilos e particularidades" (collection 41a6c06c-d7f3-81e9-aab7-000bfbca9205) e aplica cores/modelo/plataforma/trilha/palavras-chave; tom, público, proibidas e particularidades orientam a IA. Código em estudio-cursos/js/marketing.js.
 - 2026-11 — Claude — v15: 9 clientes reais na tabela do Notion (fonte: PACOTE COMPLETO v2 no Drive); grade compacta no celular; aviso de termos proibidos; demo removido quando chegam clientes reais.
 - 2026-11 — Claude — v16: 10 clientes do Estúdio de Marketing (inclui a agência) com paletas/fontes/tom; texto legível sobre cor clara; espaço entre palavras na legenda palavra-a-palavra.
+- 2026-11 — Claude — v17: edição pelo texto (✂ por frase) e remoção de repetições (app e skill --sem-repeticoes); bateria completa passou.

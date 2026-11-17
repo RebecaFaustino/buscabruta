@@ -114,3 +114,6 @@ Os limites das plataformas mudam. Se houver erro de upload, o mais comum é o ta
 - **Nenhuma fala detectada**: use `--limiar -45`.
 - **Cortes bruscos demais**: use `--pausa 0.6` ou `--respiro 0.15`.
 - **Vídeo do iPhone (.mov, HEVC)**: o ffmpeg lê normalmente. A saída é sempre H.264.
+
+## Repetições de gravação
+Quando o expert errou e regravou a frase, use `--sem-repeticoes` no `renderizar`: sai a tentativa errada e fica só a última (a detecção usa a transcrição).

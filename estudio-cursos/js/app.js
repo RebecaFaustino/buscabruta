@@ -11,7 +11,7 @@ import { drawCover } from './cover.js';
 import { TEMPLATES, PALETTES, CAPTION_MODES, CARD_VARIANTS, resolveStyle } from './styles.js';
 import { renderLesson, extOf, pickMime } from './render.js';
 import { cloud, cloudInit, cloudPull, cloudPush, cloudWatch, cloudUploadMedia, cloudFetchMedia, cloudUsage } from './cloud.js';
-import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards } from './pipeline.js';
+import { envs, importVideo, isMedia, getEnv, autoCutLesson, transcribeLesson, aiReviewLesson, keywordsAndCards, cutSourceRange, findRetakes, removeRetakes } from './pipeline.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -419,6 +419,7 @@ async function viewReady(course, lessonId, fresh = false) {
           <li><b>${lesson.cards.length}</b><span>destaques</span></li>
         </ul>
         ${(() => { const bad = forbiddenIn(client, timelineCaptions(lesson).map((c) => c.text).join(' ')); return bad.length ? `<p class="banner warn-banner">⚠ A legenda tem ${bad.length === 1 ? 'um termo' : 'termos'} que ${esc(client.name)} não usa: <b>${esc(bad.join(', '))}</b>. Toque em “Ajustar cortes e legenda” ou peça no chat para trocar.</p>` : ''; })()}
+        ${(() => { const rt = findRetakes(lesson); return rt.length ? `<div class="banner warn-banner retake-banner"><span>🔁 ${rt.length === 1 ? 'Encontrei 1 frase regravada' : `Encontrei ${rt.length} frases regravadas`} (o médico repetiu a frase). A tentativa errada pode sair.</span><button class="ghost small" id="rRetakes" type="button">Remover repetições</button></div>` : ''; })()}
         <div class="row-2">
           <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
           <div class="sfx-line"><label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros</label><button class="ghost small" id="rHear" type="button">▶ Ouvir</button></div>
@@ -455,6 +456,12 @@ async function viewReady(course, lessonId, fresh = false) {
   player.onTime(0);
   pb.onclick = () => { if (player.playing) player.stop(); else player.play(); pb.textContent = player.playing ? '❚❚' : '▶'; };
   const vert = (k) => PLATFORMS[k].h > PLATFORMS[k].w;
+  if ($('#rRetakes')) $('#rRetakes').onclick = () => {
+    const r = removeRetakes(lesson);
+    save(); player.stop();
+    toast(`${pl(r.n, 'repetição removida', 'repetições removidas')} (${fmtLong(r.secs)}). Para desfazer, use Ajustar cortes → Desfazer ou Restaurar original.`, 'ok');
+    viewReady(course, lesson.id); addBack();
+  };
   $('#rPlat').onchange = (e) => {
     const was = vert(platform);
     platform = e.target.value;
@@ -1259,6 +1266,7 @@ async function viewEditor(course, lessonId) {
         <button class="ghost" id="zoomAll">Zoom dinâmico em todos</button>
         <button class="ghost" id="zoomNone">Remover zooms</button>
         <button class="ghost" id="dropShort">Remover clipes &lt; 0,4 s</button>
+        <button class="ghost" id="retakes">Remover repetições (regravações)</button>
       </div>
       <p class="hint">${pl(lesson.clips.length, 'clipe', 'clipes')} na linha do tempo.</p>`;
     bindForm(body, client);
@@ -1292,6 +1300,14 @@ async function viewEditor(course, lessonId) {
     };
     $('#zoomAll').onclick = () => { ed.snapshot(); lesson.clips.forEach((c, i) => (c.zoom = i % 2 ? 1.15 : 1)); ed.changed(); };
     $('#zoomNone').onclick = () => { ed.snapshot(); lesson.clips.forEach((c) => (c.zoom = 1)); ed.changed(); };
+    $('#retakes').onclick = () => {
+      if (!Object.values(lesson.words).some((w) => w?.length)) return toast('Crie a legenda primeiro: é por ela que encontro as frases repetidas.');
+      ed.snapshot();
+      const r = removeRetakes(lesson);
+      if (!r.n) return toast('Nenhuma repetição encontrada.');
+      ed.changed(); player.seek(0); renderTab();
+      toast(`${pl(r.n, 'repetição removida', 'repetições removidas')} (${fmtLong(r.secs)}). Use Desfazer se precisar.`, 'ok');
+    };
     $('#dropShort').onclick = () => { ed.snapshot(); lesson.clips = lesson.clips.filter((c) => c.out - c.in >= 0.4); ed.changed(); player.seek(0); renderTab(); };
   }
 
@@ -1353,7 +1369,7 @@ async function viewEditor(course, lessonId) {
       ${select('captionStyle', 'Modelo de legenda', client.captionStyle || 'auto', CAPTION_MODES)}
       <h3>Revisão <small class="muted">${caps.length} frases</small></h3>
       <div class="btn-row" id="aiRow" hidden><button class="ghost" id="aiFix">Revisar termos médicos com IA</button></div>
-      <p class="hint">Corrija termos técnicos aqui. Toque no horário para ir até o trecho.</p>
+      <p class="hint">Corrija termos técnicos aqui. Toque no horário para ir até o trecho e em ✂ para cortar a frase do vídeo (edição pelo texto).</p>
       <div class="caps" id="capList">${editableCaps()}</div>`;
     bindForm(body, client, () => player.draw());
     cap('sample').then((smp) => { if (smp && $('#aiRow')) { $('#aiRow').hidden = false; $('#aiFix').onclick = () => aiReview(smp); } });
@@ -1420,8 +1436,9 @@ async function viewEditor(course, lessonId) {
     for (const s of lesson.sources) {
       const ps = phrases(lesson.words[s.id] || []);
       ps.forEach((p, pi) => {
-        html += `<div class="cap" data-src="${s.id}" data-pi="${pi}"><button class="t" data-seek="${p.s}" data-srcid="${s.id}">${fmt(p.s)}</button>
-          <input value="${esc(p.words.map((w) => w.w).join(' '))}"></div>`;
+        const live = lesson.clips.some((c) => c.srcId === s.id && c.out > p.s + 0.05 && c.in < p.e - 0.05);
+        html += `<div class="cap ${live ? '' : 'is-cut'}" data-src="${s.id}" data-pi="${pi}"><button class="t" data-seek="${p.s}" data-srcid="${s.id}">${fmt(p.s)}</button>
+          <input value="${esc(p.words.map((w) => w.w).join(' '))}" aria-label="Texto da legenda">${live ? `<button class="mini-btn cap-cut" data-cut="${pi}" title="Cortar esta frase do vídeo" aria-label="Cortar esta frase do vídeo">✂</button>` : '<small class="muted">cortada</small>'}</div>`;
       });
     }
     return html || '<p class="muted">Sem legenda ainda. Transcreva ou importe um .srt.</p>';
@@ -1439,6 +1456,14 @@ async function viewEditor(course, lessonId) {
         const start = all.indexOf(p.words[0]);
         all.splice(start, p.words.length, ...spread(inp.value.trim(), p.s, p.e));
         ed.changed();
+      };
+      const cutBtn = row.querySelector('[data-cut]');
+      if (cutBtn) cutBtn.onclick = () => {
+        const srcId = row.dataset.src, p = phrases(lesson.words[srcId])[+row.dataset.pi];
+        ed.snapshot();
+        const secs = cutSourceRange(lesson, srcId, p.s, p.e);
+        ed.changed(); renderTab();
+        toast(`Frase cortada (${fmtLong(secs)}). Use Desfazer se precisar.`, 'ok');
       };
       row.querySelector('[data-seek]').onclick = (e) => {
         const srcId = e.target.dataset.srcid, t = +e.target.dataset.seek;

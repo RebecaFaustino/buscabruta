@@ -169,7 +169,7 @@ main:has(.editor) { padding: 18px 22px 18px; }
 @keyframes pulse { 50% { opacity: .45; } }
 .progress em { position: relative; font-style: normal; font-size: 12px; line-height: 28px; padding: 0 10px; }
 .caps { display: grid; gap: 4px; }
-.cap { display: grid; grid-template-columns: 54px 1fr; gap: 6px; align-items: center; }
+.cap { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 6px; align-items: center; }
 .cap input { padding: 5px 8px !important; font-size: 12px; }
 .t { background: none; border: 0; padding: 2px; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .t:hover { color: var(--accent); }
@@ -457,3 +457,6 @@ p { text-wrap: pretty; }
   .clients-grid.dense p { font-size: 12px; overflow-wrap: anywhere; }
   .clients-grid.dense .add-card { grid-column: 1 / -1; min-height: 56px; }
 }
+.cap.is-cut { opacity: .5; } .cap.is-cut input { text-decoration: line-through; }
+.cap-cut { min-width: 36px; min-height: 32px; }
+.retake-banner { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }

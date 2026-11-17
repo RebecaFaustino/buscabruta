@@ -159,3 +159,83 @@ export function keywordsAndCards(lesson, client) {
   save();
   return lesson.cards.length;
 }
+
+// ---------- Edição pelo texto ----------
+// Corta o trecho [a, b] (tempo da gravação) de todos os clipes dessa gravação. Retorna os segundos removidos.
+export function cutSourceRange(lesson, srcId, a, b) {
+  const out = [];
+  let removed = 0;
+  for (const c of lesson.clips) {
+    if (c.srcId !== srcId || b <= c.in || a >= c.out) { out.push(c); continue; }
+    removed += Math.min(b, c.out) - Math.max(a, c.in);
+    if (a - c.in >= 0.08) out.push({ ...c, out: a });
+    if (c.out - b >= 0.08) out.push({ ...c, id: uid('clip'), in: b });
+  }
+  lesson.clips = out;
+  return removed;
+}
+
+const normW = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+const inTimeline = (lesson, srcId, p) => lesson.clips.some((c) => c.srcId === srcId && c.out > p.s + 0.05 && c.in < p.e - 0.05);
+
+// Repetições de gravação ("regravou a frase"): uma frase seguida logo depois por outra que começa igual
+// ou diz quase o mesmo. A primeira tentativa sai; fica a última.
+export function findRetakes(lesson) {
+  const found = [];
+  for (const s of lesson.sources) {
+    const ps = phrasesBySentence(lesson.words[s.id] || []).filter((p) => inTimeline(lesson, s.id, p));
+    for (let i = 0; i < ps.length - 1; i++) {
+      const A = normW(ps[i].text);
+      if (A.length < 3) continue;
+      for (const j of [i + 1, i + 2]) {
+        const B = ps[j] && normW(ps[j].text);
+        if (!B || B.length < 3 || ps[j].s - ps[i].e > 12) continue;
+        const sameStart = A.slice(0, 3).join(' ') === B.slice(0, 3).join(' ');
+        const setA = new Set(A), setB = new Set(B);
+        const inter = [...setA].filter((w) => setB.has(w)).length;
+        const sim = inter / Math.min(setA.size, setB.size);
+        if ((sameStart && sim >= 0.5) || sim >= 0.8) { found.push({ srcId: s.id, s: ps[i].s, e: ps[j].s, text: ps.slice(i, j).map((p) => p.text).join(' ') }); i = j - 1; break; }
+      }
+    }
+  }
+  // Também pega a regravação emendada sem pausa: as mesmas 4 palavras de novo pouco depois
+  // ("a insulina é um hormônio que… a insulina é um hormônio que controla…").
+  for (const s of lesson.sources) {
+    const ws = (lesson.words[s.id] || []).filter((w) => lesson.clips.some((c) => c.srcId === s.id && c.out > w.s && c.in < w.e));
+    const tok = ws.map((w) => normW(w.w).join(''));
+    for (let i = 0; i + 4 <= tok.length; i++) {
+      const g = tok.slice(i, i + 4);
+      if (!g.every(Boolean) || !g.some((t) => t.length > 3)) continue;
+      for (let j = i + 4; j <= Math.min(i + 30, tok.length - 4); j++) {
+        if (tok.slice(j, j + 4).join(' ') !== g.join(' ')) continue;
+        const a = ws[i].s, b = ws[j].s;
+        if (b - a > 15 || found.some((f) => f.srcId === s.id && a < f.e && b > f.s)) break;
+        found.push({ srcId: s.id, s: a, e: b, text: ws.slice(i, j).map((w) => w.w).join(' ') });
+        i = j - 1; break;
+      }
+    }
+  }
+  return found;
+}
+
+// Frases por pontuação/pausa (maiores que as linhas de legenda), para comparar tentativas.
+function phrasesBySentence(words) {
+  const out = [];
+  let cur = [];
+  const flush = () => { if (cur.length) out.push({ s: cur[0].s, e: cur[cur.length - 1].e, text: cur.map((w) => w.w).join(' ') }); cur = []; };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i], prev = words[i - 1];
+    if (cur.length && w.s - prev.e > 0.7) flush();
+    cur.push(w);
+    if (/[.!?]$/.test(w.w) || cur.length >= 30) flush();
+  }
+  flush();
+  return out;
+}
+
+export function removeRetakes(lesson) {
+  const list = findRetakes(lesson);
+  let secs = 0;
+  for (const r of list) secs += cutSourceRange(lesson, r.srcId, r.s, r.e);
+  return { n: list.length, secs };
+}
