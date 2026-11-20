@@ -5,6 +5,7 @@ import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player, drawStylePreview } from './player.js';
+import { createTimeline } from './timeline.js';
 import { SFX, playSfx } from './sfx.js';
 import { TRACKS, buildMusic } from './music.js';
 import { drawCover } from './cover.js';
@@ -961,19 +962,6 @@ async function viewEditor(course, lessonId) {
       <div class="ed-main">
         <div class="stage">
           <div class="canvas-wrap"><canvas id="preview" width="1280" height="720"></canvas></div>
-          <div class="transport">
-            <button class="play" id="playBtn" title="Espaço">▶</button>
-            <span class="time" id="timeLbl">0:00.0 / 0:00.0</span>
-            <span class="sep"></span>
-            <button class="tool" data-tool="split" title="Dividir no cursor (S)">✂ Dividir</button>
-            <button class="tool" data-tool="delete" title="Excluir clipe (Delete)">Excluir</button>
-            <button class="tool" data-tool="trimIn" title="Cortar o início do clipe até o cursor ([)">⇤ Aparar</button>
-            <button class="tool" data-tool="trimOut" title="Cortar do cursor até o fim do clipe (])">Aparar ⇥</button>
-            <button class="tool" data-tool="zoom" title="Zoom do clipe (Z)">Zoom</button>
-            <button class="tool" data-tool="left" title="Mover clipe para trás">◀</button>
-            <button class="tool" data-tool="right" title="Mover clipe para frente">▶</button>
-            <button class="tool" data-tool="card" title="Destaque no cursor (K)">+ Destaque</button>
-          </div>
         </div>
         <aside class="inspector">
           <nav class="tabs">
@@ -987,14 +975,7 @@ async function viewEditor(course, lessonId) {
           <div class="tab-body" id="tabBody"></div>
         </aside>
       </div>
-      <div class="timeline-wrap">
-        <div class="tl-bar">
-          <span>Linha do tempo</span>
-          <label class="tl-zoom">Zoom <input type="range" id="tlZoom" min="2" max="200" value="20"></label>
-          <span class="muted small">Clique para posicionar · arraste as bordas do clipe para aparar · Espaço, S, Delete, Z, K</span>
-        </div>
-        <div class="tl-scroll" id="tlScroll"><canvas id="timeline" height="150"></canvas></div>
-      </div>
+      <div class="timeline-wrap" id="tlxHost"></div>
     </div>`;
 
   const canvas = $('#preview');
@@ -1005,29 +986,75 @@ async function viewEditor(course, lessonId) {
   $('#lesTitle').oninput = (e) => { lesson.title = e.target.value; save(); player.draw(); };
 
   // ---- histórico ----
-  ed.snapshot = () => { ed.undo.push(JSON.stringify({ clips: lesson.clips, cards: lesson.cards, words: lesson.words })); if (ed.undo.length > 80) ed.undo.shift(); };
+  ed.redo = [];
+  const stateNow = () => JSON.stringify({ clips: lesson.clips, cards: lesson.cards, words: lesson.words });
+  ed.snapshot = () => { ed.undo.push(stateNow()); if (ed.undo.length > 80) ed.undo.shift(); ed.redo = []; };
   ed.changed = () => { lesson.render = null; save(); player.invalidate(); player.draw(); drawTimeline(); updateStats(); };
   $('#undoBtn').onclick = () => undo();
   function undo() {
     const s = ed.undo.pop();
     if (!s) return toast('Nada para desfazer');
+    ed.redo.push(stateNow());
     Object.assign(lesson, JSON.parse(s));
     ed.changed();
-    player.seek(player.T);
+    player.seek(Math.min(player.T, Math.max(0, player.duration - 0.01)));
+    renderTab();
+  }
+  function redo() {
+    const s = ed.redo.pop();
+    if (!s) return toast('Nada para refazer');
+    ed.undo.push(stateNow());
+    Object.assign(lesson, JSON.parse(s));
+    ed.changed();
+    player.seek(Math.min(player.T, Math.max(0, player.duration - 0.01)));
     renderTab();
   }
 
   function updateStats() {
     const d = lessonDur(lesson), r = rawDur(lesson);
     $('#durStat').innerHTML = r ? `<b>${fmtLong(d)}</b> editado · ${fmtLong(r)} bruto${r > d ? ` · <span class="ok">−${Math.round((1 - d / r) * 100)}%</span>` : ''}` : '';
-    $('#timeLbl').textContent = `${fmt(player.T)} / ${fmt(player.duration)}`;
   }
 
   // ---- transporte ----
-  const playBtn = $('#playBtn');
-  player.onTime = () => { updateStats(); drawTimeline(); playBtn.textContent = player.playing ? '❚❚' : '▶'; followPlayhead(); };
-  const togglePlay = () => { if (player.playing) { player.stop(); playBtn.textContent = '▶'; } else player.play().then(() => (playBtn.textContent = '▶')); playBtn.textContent = player.playing ? '❚❚' : '▶'; };
-  playBtn.onclick = togglePlay;
+  // ---- linha do tempo (padrão Edvid) ----
+  const tlx = createTimeline($('#tlxHost'), {
+    lesson, player, client, envs,
+    musicName: () => (client.music && client.music !== 'nenhuma' ? (TRACKS[client.music]?.name || '').split(' · ')[0] : ''),
+    onTool: (t) => tool(t),
+    onSelect: (i) => { ed.sel = i; },
+    snapshot: () => ed.snapshot(),
+    dropSnapshot: () => { ed.undo.pop(); },
+    changed: () => ed.changed(),
+    undo: () => undo(), redo: () => redo(),
+    canUndo: () => ed.undo.length > 0, canRedo: () => ed.redo.length > 0,
+    cutRange: (a, b) => cutTimelineRange(a, b),
+  });
+  const drawTimeline = () => tlx.draw();
+  const fitZoom = () => tlx.fit();
+  ed.drawTimeline = drawTimeline;
+  player.onTime = () => { updateStats(); tlx.drawHead(); tlx.follow(); };
+  const togglePlay = () => { if (player.playing) player.stop(); else player.play().then(() => tlx.drawHead()); tlx.drawHead(); };
+  $('#playBtn').onclick = togglePlay;
+
+  // corta um trecho da linha do tempo editada (IN/OUT), em quantos clipes ele atravessar
+  function cutTimelineRange(a, b) {
+    ed.snapshot();
+    const out = [];
+    let acc = 0;
+    for (const c of lesson.clips) {
+      const len = c.out - c.in, t0 = acc, t1 = acc + len;
+      acc = t1;
+      if (b <= t0 || a >= t1) { out.push(c); continue; }
+      if (a - t0 >= 0.04) out.push({ ...c, out: c.in + (a - t0) });
+      if (t1 - b >= 0.04) out.push({ ...c, id: uid('clip'), in: c.in + (b - t0) });
+    }
+    lesson.clips = out;
+    ed.sel = -1; tlx.sel = -1;
+    ed.changed();
+    player.seek(Math.min(a, Math.max(0, player.duration - 0.01)));
+    renderTab();
+    toast(`Trecho de ${fmtLong(b - a)} cortado. Use Desfazer se precisar.`, 'ok');
+  }
 
   // ---- ferramentas ----
   function tool(t) {
@@ -1075,6 +1102,7 @@ async function viewEditor(course, lessonId) {
       lesson.cards.push({ id: uid('card'), srcId: c.srcId, t: local, dur: 3, text: w ? w.w.replace(/[^\p{L}\p{N}\s-]/gu, '') : 'Palavra-chave', sub: '' });
       ed.tab = 'destaques';
     }
+    tlx.sel = ed.sel;
     ed.changed();
     player.seek(player.T);
     renderTab();
@@ -1083,151 +1111,19 @@ async function viewEditor(course, lessonId) {
 
   const onKey = (e) => {
     if (e.target.matches('input, textarea, select, [contenteditable]')) return;
+    if (tlx.onKey(e)) return;
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if (e.key === 's' || e.key === 'S') tool('split');
     else if (e.key === 'Delete' || e.key === 'Backspace') tool('delete');
-    else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(); }
     else if (e.key === 'z' || e.key === 'Z') tool('zoom');
     else if (e.key === 'k' || e.key === 'K') tool('card');
     else if (e.key === '[') tool('trimIn');
     else if (e.key === ']') tool('trimOut');
-    else if (e.key === 'ArrowLeft') player.seek(player.T - (e.shiftKey ? 5 : 1 / 30));
-    else if (e.key === 'ArrowRight') player.seek(player.T + (e.shiftKey ? 5 : 1 / 30));
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); player.seek(Math.max(0, player.T - (e.shiftKey ? 5 : 1 / 30))); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); player.seek(Math.min(player.duration - 0.001, player.T + (e.shiftKey ? 5 : 1 / 30))); }
   };
   document.addEventListener('keydown', onKey);
   ed.dispose = () => document.removeEventListener('keydown', onKey);
-
-  // ---- linha do tempo ----
-  const tl = $('#timeline'), scroll = $('#tlScroll');
-  const ROW = { ruler: 22, clips: 64, caps: 24, cards: 24 };
-  const tlH = ROW.ruler + ROW.clips + ROW.caps + ROW.cards + 16;
-  $('#tlZoom').oninput = (e) => { ed.pps = +e.target.value; drawTimeline(); };
-
-  function fitZoom() {
-    const d = lessonDur(lesson);
-    if (d > 0) { ed.pps = Math.max(2, Math.min(200, (scroll.clientWidth - 40) / d)); $('#tlZoom').value = ed.pps; }
-  }
-
-  function drawTimeline() {
-    const dpr = window.devicePixelRatio || 1;
-    const d = player.duration || 0;
-    const W = Math.max(scroll.clientWidth, d * ed.pps + 40);
-    if (tl.width !== Math.round(W * dpr) || tl.height !== Math.round(tlH * dpr)) {
-      tl.width = Math.round(W * dpr); tl.height = Math.round(tlH * dpr);
-      tl.style.width = W + 'px'; tl.style.height = tlH + 'px';
-    }
-    const g = tl.getContext('2d');
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, W, tlH);
-    const css = getComputedStyle(document.documentElement);
-    const ink = css.getPropertyValue('--ink-3').trim(), line = css.getPropertyValue('--line').trim();
-    // régua
-    g.fillStyle = ink; g.font = '11px Inter, sans-serif'; g.textBaseline = 'top';
-    const step = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600].find((s) => s * ed.pps > 70) || 600;
-    for (let t = 0; t <= d + step; t += step) {
-      const x = t * ed.pps;
-      g.fillRect(x, 14, 1, 8);
-      const lbl = fmtLong(t).replace('min ', ':').replace('s', ''), lw = g.measureText(lbl).width;
-      g.fillText(lbl, x + 3 + lw > W ? x - 3 - lw : x + 3, 2);
-    }
-    // clipes
-    const y = ROW.ruler;
-    lesson.clips.forEach((c, i) => {
-      const x = player.starts[i] * ed.pps, w = Math.max(1, (c.out - c.in) * ed.pps);
-      const zoomed = (c.zoom || 1) > 1.01;
-      g.fillStyle = i === ed.sel ? client.accent : zoomed ? shade(client.primary, 0.25) : client.primary;
-      g.beginPath(); g.roundRect ? g.roundRect(x + 0.5, y, w - 1, ROW.clips, 5) : g.rect(x, y, w, ROW.clips); g.fill();
-      const env = envs.get(c.srcId);
-      if (env && w > 3) {
-        g.fillStyle = 'rgba(255,255,255,0.55)';
-        const mid = y + ROW.clips / 2;
-        for (let px = 0; px < w - 2; px += 2) {
-          const t0 = c.in + px / ed.pps, t1 = c.in + (px + 2) / ed.pps;
-          let m = 0;
-          for (let k = Math.floor(t0 * 100); k < Math.ceil(t1 * 100) && k < env.length; k++) if (env[k] > m) m = env[k];
-          const hh = Math.min(ROW.clips / 2 - 4, Math.sqrt(m) * ROW.clips * 0.9);
-          g.fillRect(x + 1 + px, mid - hh, 1.4, hh * 2);
-        }
-      }
-      if (zoomed && w > 30) { g.fillStyle = '#fff'; g.font = '600 10px Inter, sans-serif'; g.fillText(Math.round(c.zoom * 100) + '%', x + 5, y + 4); }
-    });
-    // legendas
-    const yc = y + ROW.clips + 6;
-    g.font = '10px Inter, sans-serif'; g.textBaseline = 'middle';
-    for (const p of player.caps || []) {
-      const x = p.s * ed.pps, w = (p.e - p.s) * ed.pps;
-      g.fillStyle = line; g.fillRect(x, yc, Math.max(1, w - 1), ROW.caps - 4);
-      if (w > 24) { g.save(); g.beginPath(); g.rect(x, yc, w - 2, ROW.caps); g.clip(); g.fillStyle = ink; g.fillText(p.text, x + 3, yc + (ROW.caps - 4) / 2); g.restore(); }
-    }
-    // destaques
-    const yk = yc + ROW.caps + 2;
-    for (const k of player.cardsT || []) {
-      const x = k.T * ed.pps, w = k.dur * ed.pps;
-      g.fillStyle = client.accent; g.globalAlpha = 0.85;
-      g.fillRect(x, yk, Math.max(2, w), ROW.cards - 4);
-      g.globalAlpha = 1;
-      if (w > 24) { g.fillStyle = '#fff'; g.font = '600 10px Inter, sans-serif'; g.fillText(k.text.toUpperCase(), x + 4, yk + (ROW.cards - 4) / 2, w - 6); }
-    }
-    // cursor
-    const px = player.T * ed.pps;
-    g.fillStyle = '#e4572e';
-    g.fillRect(px - 1, 0, 2, tlH);
-    g.beginPath(); g.moveTo(px - 6, 0); g.lineTo(px + 6, 0); g.lineTo(px, 8); g.fill();
-  }
-  ed.drawTimeline = drawTimeline;
-
-  function followPlayhead() {
-    if (!player.playing) return;
-    const px = player.T * ed.pps;
-    if (px > scroll.scrollLeft + scroll.clientWidth - 60 || px < scroll.scrollLeft) scroll.scrollLeft = px - 60;
-  }
-
-  // arrastar bordas / clicar
-  let drag = null;
-  const hit = (ex) => {
-    for (let i = 0; i < lesson.clips.length; i++) {
-      const c = lesson.clips[i], x0 = player.starts[i] * ed.pps, x1 = x0 + (c.out - c.in) * ed.pps;
-      if (Math.abs(ex - x0) < 6) return { i, edge: 'in' };
-      if (Math.abs(ex - x1) < 6) return { i, edge: 'out' };
-      if (ex > x0 && ex < x1) return { i, edge: null };
-    }
-    return null;
-  };
-  tl.onpointermove = (e) => {
-    if (drag || e.pointerType !== 'mouse') return;
-    const h = e.offsetY > ROW.ruler && e.offsetY < ROW.ruler + ROW.clips ? hit(e.offsetX) : null;
-    tl.style.cursor = h?.edge ? 'ew-resize' : 'pointer';
-  };
-  tl.onpointerdown = (e) => {
-    const inClips = e.offsetY > ROW.ruler && e.offsetY < ROW.ruler + ROW.clips;
-    const h = inClips ? hit(e.offsetX) : null;
-    if (h?.edge && e.pointerType === 'mouse') {
-      ed.snapshot();
-      const c = lesson.clips[h.i], src = lesson.sources.find((s) => s.id === c.srcId);
-      drag = { ...h, x: e.clientX, in: c.in, out: c.out, max: src?.duration || c.out };
-      const mv = (ev) => {
-        const dt = (ev.clientX - drag.x) / ed.pps;
-        if (drag.edge === 'in') c.in = Math.min(c.out - 0.1, Math.max(0, drag.in + dt));
-        else c.out = Math.max(c.in + 0.1, Math.min(drag.max, drag.out + dt));
-        player.invalidate(); drawTimeline();
-      };
-      const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); drag = null; ed.changed(); player.seek(player.T); };
-      addEventListener('pointermove', mv); addEventListener('pointerup', up);
-      return;
-    }
-    // toque: só posiciona se o dedo não arrastou (arrastar rola a linha do tempo)
-    const x0 = e.clientX, sx = scroll.scrollLeft, ox = e.offsetX;
-    const up = (ev) => {
-      tl.removeEventListener('pointerup', up);
-      if (Math.abs(ev.clientX - x0) > 8 || Math.abs(scroll.scrollLeft - sx) > 4) return;
-      ed.sel = h ? h.i : -1;
-      const wasPlaying = player.playing;
-      player.stop();
-      player.seek(ox / ed.pps).then(() => wasPlaying && player.play());
-      drawTimeline();
-    };
-    tl.addEventListener('pointerup', up);
-  };
 
   // ---- abas ----
   ed.tab = 'cortes';
@@ -1321,7 +1217,7 @@ async function viewEditor(course, lessonId) {
       catch (e) { toast(e.message, 'err'); }
     }
     await player.setLesson(lesson, client);
-    fitZoom();
+    tlx.initialView();
     ed.changed(); renderTab();
     window.dispatchEvent(new Event('ec-media-added'));
     toast('Vídeo importado. Próximo passo: “Gerar cortes secos”.', 'ok');
@@ -1340,7 +1236,7 @@ async function viewEditor(course, lessonId) {
     try {
       ed.snapshot();
       const removed = await autoCutLesson(lesson, client);
-      ed.changed(); player.seek(0); fitZoom(); drawTimeline(); renderTab();
+      ed.changed(); player.seek(0); tlx.initialView(); renderTab();
       toast(`${lesson.clips.length} cortes · ${fmtLong(removed)} de pausas removidas`, 'ok');
     } catch (e) { toast(e.message, 'err'); }
     finally { btn.disabled = false; btn.textContent = 'Gerar cortes secos'; }
@@ -1635,13 +1531,11 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
   await document.fonts.ready;
   await player.setLesson(lesson, client);
   for (const s of lesson.sources) loadEnv(s);
-  fitZoom();
+  tlx.initialView();
   drawTimeline();
   updateStats();
-  const ro = new ResizeObserver(() => drawTimeline());
-  ro.observe(scroll);
   const prevDispose = ed.dispose;
-  ed.dispose = () => { prevDispose(); ro.disconnect(); };
+  ed.dispose = () => { prevDispose(); tlx.dispose(); };
 }
 
 function shade(hex, amt) {

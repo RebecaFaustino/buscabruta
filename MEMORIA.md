@@ -22,3 +22,4 @@ Formato de cada linha: data — quem — o que foi feito ou decidido.
 - 2026-11 — Claude — v15: 9 clientes reais na tabela do Notion (fonte: PACOTE COMPLETO v2 no Drive); grade compacta no celular; aviso de termos proibidos; demo removido quando chegam clientes reais.
 - 2026-11 — Claude — v16: 10 clientes do Estúdio de Marketing (inclui a agência) com paletas/fontes/tom; texto legível sobre cor clara; espaço entre palavras na legenda palavra-a-palavra.
 - 2026-11 — Claude — v17: edição pelo texto (✂ por frase) e remoção de repetições (app e skill --sem-repeticoes); bateria completa passou.
+- 2026-11 — Claude — v18: linha do tempo do editor refeita no padrão do Edvid (edvid-desktop, MIT): faixas Legendas/Destaques/Vídeo/Voz/Trilha, régua MM:SS, agulha laranja, alças de aparar com encaixe, C/Delete/Ctrl+Z/Shift+Ctrl+Z, zoom 1–8×, IN/OUT + Cortar trecho, mudo. Código em estudio-cursos/js/timeline.js.
