@@ -19,7 +19,13 @@
     <p class="side-label">Clientes</p>
     <nav id="clientList" class="client-list"></nav>
     <button id="newClientBtn" class="ghost full">+ Novo cliente</button>
-    <p class="side-foot">Projetos e vídeos ficam salvos na sua nuvem privada do claude.ai e também neste aparelho. Só você acessa.</p>
+    <div class="side-backup" id="bkBox">
+      <p class="side-label">Seus arquivos</p>
+      <p class="bk-line" id="bkStore">Vídeos guardados neste aparelho</p>
+      <p class="bk-line" id="bkTxt">Backup dos projetos no Google Drive</p>
+      <div class="btn-row"><button class="ghost small" id="bkNow" type="button">Fazer backup agora</button><label class="ghost small file-btn">Restaurar<input type="file" id="bkIn" accept=".json,application/json" hidden></label></div>
+    </div>
+    <p class="side-foot">Os vídeos ficam no seu aparelho (não vão para a nuvem). Os projetos (cortes, legendas, estilos) ficam na sua nuvem privada do claude.ai e com backup automático no seu Google Drive. Só você acessa.</p>
   </div>
 </aside>
 <main id="view"><div class="boot" aria-live="polite"><span class="spin"></span><p>Abrindo o Estúdio…</p></div></main>

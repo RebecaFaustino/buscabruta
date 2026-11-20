@@ -7,7 +7,7 @@
 const LABEL = 46; // coluna dos ícones das faixas (px)
 const MIN_CLIP = 0.04;
 const SNAP_PX = 8;
-const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
 const ICON = {
   captions: '<rect x="2.5" y="4" width="11" height="8" rx="1.5"/><path d="M5 9.5h2.5M9 9.5h2M5 7h6"/>',
@@ -32,7 +32,7 @@ const ICON = {
 };
 const svg = (k, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const mmss = (t) => { t = Math.max(0, Math.floor(t + 1e-6)); return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+const mmss = (t) => { t = Math.max(0, Math.floor(t + 1e-6)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, ss = String(t % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${String(m).padStart(2, '0')}:${ss}`; };
 const tc = (t, fps = 30) => { t = Math.max(0, t); const f = Math.floor((t % 1) * fps + 1e-6); return `${mmss(t)}:${String(f).padStart(2, '0')}`; };
 
 export function createTimeline(host, o) {
@@ -134,16 +134,33 @@ export function createTimeline(host, o) {
     return `<div class="${cls}" style="left:${l}px;width:${w}px" ${extra}><span class="lb">${label}</span></div>`;
   }
 
+  // Só desenha o que está perto da parte visível (aulas de 1 h têm milhares de legendas e cortes).
+  let vis = [0, Infinity];
+  function visibleRange() {
+    const d = dur();
+    if (!d) return [0, Infinity];
+    const a = tOf(scroll.scrollLeft - scroll.clientWidth), b = tOf(scroll.scrollLeft + 2 * scroll.clientWidth);
+    return [a, b <= a ? Infinity : b];
+  }
+  const inView = (t0, t1) => t1 >= vis[0] && t0 <= vis[1];
+  let lastSL = -1e9;
+  scroll.addEventListener('scroll', () => {
+    if (Math.abs(scroll.scrollLeft - lastSL) < scroll.clientWidth * 0.5) return;
+    requestAnimationFrame(() => { drawTracks(); drawRuler(); });
+  }, { passive: true });
+
   function drawTracks() {
     const clips = lesson.clips, starts = player.starts || [];
+    vis = visibleRange(); lastSL = scroll.scrollLeft;
     const rows = [];
     const track = (kind, tone, title, inner) => rows.push(`<div class="tlx-track" data-kind="${kind}"><div class="tlx-lab ${tone}" title="${title}">${svg(ICON[kind] ? kind : 'video')}</div><div class="tlx-lane">${inner}</div></div>`);
     const caps = player.caps || [];
-    if (caps.length) track('captions', 'teal', 'Legendas', caps.map((p) => block('chip capt', p.s, p.e, esc(p.text))).join(''));
+    if (caps.length) track('captions', 'teal', 'Legendas', caps.filter((p) => inView(p.s, p.e)).map((p) => block('chip capt', p.s, p.e, esc(p.text))).join(''));
     const cards = player.cardsT || [];
-    if (cards.length) track('text', 'orange', 'Destaques', cards.map((k) => block('chip head', k.T, k.T + (k.dur || 3), esc(k.text))).join(''));
+    if (cards.length) track('text', 'orange', 'Destaques', cards.filter((k) => inView(k.T, k.T + (k.dur || 3))).map((k) => block('chip head', k.T, k.T + (k.dur || 3), esc(k.text))).join(''));
     track('video', 'orange', 'Vídeo', clips.map((c, i) => {
       const t0 = starts[i] ?? 0, t1 = t0 + (c.out - c.in);
+      if (!inView(t0, t1) && i !== st.sel) return '';
       const z = (c.zoom || 1) > 1.01 ? ` · ${Math.round(c.zoom * 100)}%` : '';
       const sel = i === st.sel;
       const handles = sel ? '<b class="hd l" data-h="in" title="Ajustar início do take (arraste)"></b><b class="hd r" data-h="out" title="Ajustar fim do take (arraste)"></b>' : '';
@@ -152,6 +169,7 @@ export function createTimeline(host, o) {
     }).join(''));
     track('voice', 'teal', 'Voz', clips.map((c, i) => {
       const t0 = starts[i] ?? 0, t1 = t0 + (c.out - c.in);
+      if (!inView(t0, t1)) return '';
       return `<div class="clip aud${i === st.sel ? ' link' : ''}${xOf(t1) - xOf(t0) < 18 ? ' tiny' : ''}" data-i="${i}" style="left:${xOf(t0) - LABEL}px;width:${Math.max(2, xOf(t1) - xOf(t0))}px">${wave(c)}</div>`;
     }).join(''));
     const mus = o.musicName?.();
@@ -193,8 +211,10 @@ export function createTimeline(host, o) {
   }
 
   // ---------- zoom ----------
+  // aulas longas: permite aproximar até ~20 s por tela (1 h → até 180×)
+  const maxZ = () => Math.max(8, Math.min(400, dur() / 20));
   function setZoom(z, anchorClientX) {
-    z = Math.round(Math.max(1, Math.min(8, z)) * 100) / 100;
+    z = Math.round(Math.max(1, Math.min(maxZ(), z)) * 100) / 100;
     if (z === st.zoom) return;
     const r = scroll.getBoundingClientRect();
     const ax = anchorClientX != null ? anchorClientX - r.left : xOf(player.T) - scroll.scrollLeft;
@@ -355,7 +375,7 @@ export function createTimeline(host, o) {
     // vista inicial: no celular (ou aula longa) aproxima até ~6 px por segundo, para os takes não ficarem finos demais
     initialView() {
       const lane1 = Math.max(1, scroll.clientWidth - LABEL), d = dur();
-      const z = d ? Math.max(1, Math.min(8, (6 * d) / lane1)) : 1;
+      const z = d ? Math.max(1, Math.min(maxZ(), ((d > 900 ? 2 : 6) * d) / lane1)) : 1;
       st.zoom = Math.round(z * 100) / 100; draw(); scroll.scrollLeft = 0;
     },
     dispose() { ro.disconnect(); },

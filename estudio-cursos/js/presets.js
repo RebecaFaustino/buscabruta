@@ -8,10 +8,24 @@ export const PLATFORMS = {
   memberkit: { name: 'Memberkit', w: 1920, h: 1080, fps: 30, vbr: 8_000_000, note: 'MP4 (via Panda/Vimeo/YouTube).' },
   youtube: { name: 'YouTube (não listado)', w: 1920, h: 1080, fps: 30, vbr: 10_000_000, note: 'MP4, ideal para hospedar e incorporar.' },
   reels:   { name: 'Reels / Shorts (divulgação)', w: 1080, h: 1920, fps: 30, vbr: 8_000_000, note: '9:16 vertical para teaser da aula.' },
-  master4k:{ name: '4K 60 fps (máxima qualidade)', w: 3840, h: 2160, fps: 60, vbr: 45_000_000, note: 'Arquivo grande (~4× o 1080p). Gera quadro a quadro, sem perder quadros, mas demora mais — no celular, prefira 1080p.' },
-  hd60:    { name: '1080p 60 fps', w: 1920, h: 1080, fps: 60, vbr: 12_000_000, note: 'Movimento mais fluido, arquivo ~1,5× maior.' },
-  rascunho:{ name: 'Rascunho rápido 720p', w: 1280, h: 720, fps: 30, vbr: 3_000_000, note: 'Para aprovação do cliente.' },
 };
+
+// Qualidade de exportação: sempre 60 fps e nunca abaixo de Full HD. A taxa de bits segue o recomendado
+// pelo YouTube para SDR em 60 fps (1080p ≈ 12 Mb/s, 1440p ≈ 24, 4K ≈ 53–68), com folga para não perder detalhe.
+export const QUALITIES = {
+  fhd: { name: 'Full HD 1080p · 60 fps', long: 1920, vbr: 16_000_000, note: 'Padrão para Hotmart, Eduzz, Sympla e Kiwify.' },
+  qhd: { name: '2K 1440p · 60 fps', long: 2560, vbr: 32_000_000, note: 'Mais nítido em telas grandes; arquivo ~2× o Full HD.' },
+  uhd: { name: '4K 2160p · 60 fps', long: 3840, vbr: 60_000_000, note: 'Máxima qualidade (master). Arquivo ~4× o Full HD e exportação mais demorada.' },
+};
+
+// Junta o destino (proporção e observações) com a qualidade escolhida.
+export function exportPreset(platform, quality) {
+  const p = PLATFORMS[platform] || PLATFORMS.hotmart;
+  const q = QUALITIES[quality] || QUALITIES.fhd;
+  const vertical = p.h > p.w;
+  const w = vertical ? Math.round((q.long * 9) / 16) : q.long, h = vertical ? q.long : Math.round((q.long * 9) / 16);
+  return { ...p, w: w - (w % 2), h: h - (h % 2), fps: 60, vbr: q.vbr, quality: quality in QUALITIES ? quality : 'fhd', qname: q.name, qnote: q.note };
+}
 
 export const LOOKS = {
   natural:  { name: 'Natural', filter: 'none' },

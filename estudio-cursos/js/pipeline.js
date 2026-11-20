@@ -32,7 +32,7 @@ export async function importVideo(lesson, file) {
   if (!duration || !isFinite(duration)) throw new Error(`Não foi possível ler “${file.name}”. Use um vídeo MP4 ou MOV.`);
   const mediaId = uid('vid');
   db.keep(mediaId, file); // grava em segundo plano
-  const src = { id: uid('src'), mediaId, name: file.name, duration };
+  const src = { id: uid('src'), mediaId, name: file.name, duration, size: file.size, mtime: file.lastModified || 0 };
   lesson.sources.push(src);
   lesson.clips.push({ id: uid('clip'), srcId: src.id, in: 0, out: duration, zoom: 1 });
   save();

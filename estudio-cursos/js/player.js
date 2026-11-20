@@ -1,5 +1,7 @@
 // Motor de reprodução da linha do tempo editada + composição (zoom, look, legendas, palavras-chave).
 import { fontStack, ensureFont } from './fonts.js';
+import { presetChain, voicePreset } from './audiopro.js';
+import { gradeParams, gradeImage, ensureLut } from './grade.js';
 import { db } from './db.js';
 import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
@@ -69,6 +71,7 @@ export class Player {
     if (this.host && lesson.sources.some((s) => !this.videos.has(s.id))) this.host.classList.add('loading');
     try { await this.loadSources(lesson); } finally { this.host?.classList.remove('loading'); }
     await Promise.all([ensureFont(client.fontTitle), ensureFont(client.fontBody)]).catch(() => {});
+    if (client.grade?.lutId) await ensureLut(client.grade.lutId, loadLutText);
     this.logo = null;
     if (client.logoMediaId) {
       const img = new Image();
@@ -146,7 +149,7 @@ export class Player {
     this.musicBus = ctx.createGain();
     this.musicBus.connect(this.speaker);
     this.musicBus.connect(this.dest);
-    this.chainIn = voiceChain(ctx, this.master);
+    this.buildChain();
     for (const v of this.videos.values()) this.wireAudio(v);
   }
 
@@ -158,10 +161,15 @@ export class Player {
 
   applyClean(v) {
     v._src.disconnect();
-    v._src.connect(this.client?.cleanVoice ? this.chainIn : this.master);
+    v._src.connect(voicePreset(this.client).clean ? this.chainIn : this.master);
   }
 
-  refreshAudio() { if (this.ctx) for (const v of this.videos.values()) if (v._src) this.applyClean(v); }
+  buildChain() {
+    try { this.chainIn?.disconnect(); } catch {}
+    this._preset = voicePreset(this.client);
+    this.chainIn = presetChain(this.ctx, this.master, this._preset);
+  }
+  refreshAudio() { if (!this.ctx) return; this.buildChain(); for (const v of this.videos.values()) if (v._src) this.applyClean(v); }
 
   fade(to, t = 0.012) { if (this.master) this.master.gain.setTargetAtTime(to, this.ctx.currentTime, t); }
 
@@ -253,7 +261,7 @@ export class Player {
 
   // ---------- Composição ----------
   // Prévia ao vivo: o próprio <video> fica na tela (funciona no iPhone) e o canvas transparente desenha os grafismos por cima.
-  liveVideo(c, local, st) {
+  liveVideo(c, local, st, graded) {
     const cl = this.client || {};
     for (const [id, v] of this.videos) {
       const on = id === c.srcId;
@@ -267,8 +275,11 @@ export class Player {
     const tf = `scale(${zoom.toFixed(4)})`, org = `${(fx * 100).toFixed(1)}% 38%`;
     if (v._tf !== tf) { v.style.transform = tf; v._tf = tf; }
     if (v._org !== org) { v.style.transformOrigin = org; v._org = org; }
-    const flt = lookFilter(cl, st);
+    const flt = graded ? 'none' : lookFilter(cl, st);
     if (v._flt !== flt) { v.style.filter = flt; v._flt = flt; }
+    // com color grading, o vídeo fica invisível e o quadro colorido é desenhado no canvas por cima
+    const op = graded ? '0' : '1';
+    if (v._op !== op) { v.style.opacity = op; v._op = op; }
     const pos = `${(fx * 100).toFixed(1)}% 38%`; // na prévia vertical, enquadra o rosto do expert
     if (v._pos !== pos) { v.style.objectPosition = pos; v._pos = pos; }
   }
@@ -303,8 +314,9 @@ export class Player {
     const T = this.T;
     const i = this.clipAt(T), c = this.lesson.clips[i];
     const local = (T - this.starts[i]) / Math.max(0.001, c.out - c.in);
-    if (live) this.liveVideo(c, local, st);
-    else {
+    const gp = gradeParams(cl);
+    if (live) this.liveVideo(c, local, st, !!gp);
+    if (!live || gp) {
       // na exportação quadro a quadro, o quadro vem decodificado (this.frame) em vez do <video>
       const fr = this.frame;
       const v = fr ? null : this.videos.get(c.srcId);
@@ -321,8 +333,12 @@ export class Player {
         let dx = W * tx - fx * dw, dy = H * fy - fy * dh;
         dx = Math.min(0, Math.max(W - dw, dx)); dy = Math.min(0, Math.max(H - dh, dy));
         try {
-          g.filter = lookFilter(cl, st);
-          g.drawImage(img, dx, dy, dw, dh);
+          const ok = live ? (img.readyState >= 2) : true;
+          const gw = Math.min(vw, Math.ceil(dw)), gh = Math.round((gw * vh) / vw);
+          const graded = gp && ok ? gradeImage(img, gw, gh, gp) : null;
+          if (graded) g.drawImage(graded, dx, dy, dw, dh);
+          else if (!live) { g.filter = lookFilter(cl, st); g.drawImage(img, dx, dy, dw, dh); }
+          else if (gp && !ok) { /* aguardando o quadro */ }
         } catch (e) { /* quadro indisponível neste instante */ }
         g.filter = 'none';
       }
@@ -748,4 +764,11 @@ function onColor(hex) {
   const n = parseInt(m[1], 16), lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
   const L = 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
   return L > 0.4 ? '#111111' : '#FFFFFF';
+}
+
+// LUT guardado no aparelho (ou na nuvem) como texto .cube
+export async function loadLutText(id) {
+  const b = await db.getBlob(id);
+  if (!b) throw new Error('LUT não encontrado neste aparelho');
+  return await b.text();
 }

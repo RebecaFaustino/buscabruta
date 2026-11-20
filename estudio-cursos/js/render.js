@@ -18,11 +18,11 @@ export async function renderLesson(player, preset, opts = {}) {
   const codecs = await offlineCodecs(preset);
   if (codecs) {
     try {
-      const blob = await renderOffline(player, preset, codecs, { onProgress: (f, msg) => opts.onProgress?.(f, msg), signal: opts.signal });
+      const blob = await renderOffline(player, preset, codecs, { onProgress: (f, msg) => opts.onProgress?.(f, msg), signal: opts.signal, name: opts.name });
       await player.seek(0);
       return blob;
     } catch (e) {
-      if (e?.name === 'AbortError') throw e;
+      if (e?.name === 'AbortError' || e?.code === 'missing') throw e;
       console.warn('Exportação quadro a quadro falhou, usando gravação em tempo real:', e);
     }
   }

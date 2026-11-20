@@ -1,13 +1,17 @@
 import { db } from './db.js';
 import { state, save, load, uid, newClient, newCourse, newModule, newLesson, getClient, getCourse, findLesson, briefOf } from './state.js';
 import { startMarketing, refreshMarketing, onMkt, mkt, MKT_URL, forbiddenIn } from './marketing.js';
-import { PLATFORMS, LOOKS, CAPTION_STYLES } from './presets.js';
+import { PLATFORMS, LOOKS, CAPTION_STYLES, QUALITIES, exportPreset } from './presets.js';
 import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player, drawStylePreview } from './player.js';
 import { createTimeline } from './timeline.js';
 import { FONT_LIST, ensureFont, fontStack, fontName } from './fonts.js';
 import { learnStyle } from './learn.js';
+import { GRADE_LOOKS, setLut, parseCube, gradingAvailable } from './grade.js';
+import { VOICE_PRESETS } from './audiopro.js';
+import { backupNow, startAutoBackup, onBackup, restoreBackup } from './backup.js';
+import { storageInfo, copyProgress } from './db.js';
 import { SFX, playSfx } from './sfx.js';
 import { TRACKS, buildMusic } from './music.js';
 import { drawCover } from './cover.js';
@@ -20,7 +24,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60), d = Math.floor((t % 1) * 10); return `${m}:${String(s).padStart(2, '0')}.${d}`; };
 const fmtLong = (t) => { t = Math.round(t || 0); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return h ? `${h}h${String(m).padStart(2, '0')}` : m ? `${m}min ${String(s).padStart(2, '0')}s` : `${s}s`; };
-const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
+const mb = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1).replace('.', ',') + ' GB' : (b / 1048576).toFixed(1).replace('.', ',') + ' MB');
 const pl = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 const slug = (s) => norm(s).replace(/\s+/g, '-').slice(0, 60) || 'aula';
 const lessonDur = (l) => l.clips.reduce((a, c) => a + c.out - c.in, 0);
@@ -405,7 +409,7 @@ async function viewReady(course, lessonId, fresh = false) {
   const client = getClient(course.clientId);
   const raw = rawDur(lesson), d = lessonDur(lesson);
   const nWords = Object.values(lesson.words).reduce((a, w) => a + w.length, 0);
-  let platform = lesson.platform || client.platform;
+  let platform = PLATFORMS[lesson.platform || client.platform] ? lesson.platform || client.platform : 'hotmart';
   view.innerHTML = `
     <header class="page-head"><div><p class="eyebrow"><a href="#/">Início</a> / ${esc(client.name)}</p><h1>${esc(lesson.title)}</h1></div></header>
     ${fresh ? '<p class="banner ok-banner">Pronto! Confira a prévia e toque em <b>Gerar vídeo final</b>.</p>' : ''}
@@ -425,6 +429,7 @@ async function viewReady(course, lessonId, fresh = false) {
         ${(() => { const rt = findRetakes(lesson); return rt.length ? `<div class="banner warn-banner retake-banner"><span>🔁 ${rt.length === 1 ? 'Encontrei 1 frase regravada' : `Encontrei ${rt.length} frases regravadas`} (o médico repetiu a frase). A tentativa errada pode sair.</span><button class="ghost small" id="rRetakes" type="button">Remover repetições</button></div>` : ''; })()}
         <div class="row-2">
           <label>Plataforma<select id="rPlat">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === platform ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+          <label>Qualidade<select id="rQual">${Object.entries(QUALITIES).map(([k, v]) => `<option value="${k}" ${k === (lesson.quality || client.quality || 'fhd') ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
           <div class="sfx-line"><label class="check"><input type="checkbox" id="rSfx" ${client.sfx ? 'checked' : ''}> Efeitos sonoros</label><button class="ghost small" id="rHear" type="button">▶ Ouvir</button></div>
         </div>
         <div id="rOut"></div>
@@ -454,6 +459,7 @@ async function viewReady(course, lessonId, fresh = false) {
   editor = { player };
   await document.fonts.ready;
   await player.setLesson(lesson, client);
+  relinkBanner(lesson, async () => { await player.setLesson(lesson, client); player.draw(); });
   const pb = $('#rPlay'), tl = $('#rTime');
   player.onTime = (T) => { tl.textContent = `${fmt(T)} / ${fmt(player.duration)}`; pb.textContent = player.playing ? '❚❚' : '▶'; };
   player.onTime(0);
@@ -465,6 +471,7 @@ async function viewReady(course, lessonId, fresh = false) {
     toast(`${pl(r.n, 'repetição removida', 'repetições removidas')} (${fmtLong(r.secs)}). Para desfazer, use Ajustar cortes → Desfazer ou Restaurar original.`, 'ok');
     viewReady(course, lesson.id); addBack();
   };
+  $('#rQual').onchange = (e) => { lesson.quality = e.target.value; save(); drawOut(); };
   $('#rPlat').onchange = (e) => {
     const was = vert(platform);
     platform = e.target.value;
@@ -540,12 +547,14 @@ async function viewReady(course, lessonId, fresh = false) {
   const base = slug(lesson.title);
   function drawOut() {
     const r = lesson.render;
-    const same = r && r.platform === platform;
+    const quality = lesson.quality || client.quality || 'fhd';
+    const P = exportPreset(platform, quality);
+    const same = r && r.platform === platform && (r.quality || 'fhd') === quality;
     $('#rOut').innerHTML = same
       ? `<div class="render-ok"><b>✓ Vídeo final pronto</b> · ${mb(r.size)} · ${r.ext.toUpperCase()}
           <div class="btn-row"><button class="btn" id="rDl">Baixar vídeo</button>${nWords ? '<button class="ghost" id="rSrt">Baixar legenda</button>' : ''}</div></div>`
       : `<button class="btn big full" id="rGo">Gerar vídeo final</button>
-         <p class="hint">${Math.min(PLATFORMS[platform].w, PLATFORMS[platform].h) >= 2160 ? '4K' : Math.min(PLATFORMS[platform].w, PLATFORMS[platform].h) + 'p'}${PLATFORMS[platform].h > PLATFORMS[platform].w ? ' vertical' : ''} · ${PLATFORMS[platform].fps} fps · leva o mesmo tempo da aula (${fmtLong(d)}). Deixe a tela ligada. ${esc(PLATFORMS[platform].note)}</p>
+         <p class="hint">${P.w}×${P.h}${P.h > P.w ? ' vertical' : ''} · 60 fps · ${(P.vbr / 1e6).toFixed(0)} Mb/s · arquivo de ~${mb((P.vbr / 8 + 32000) * d)}. ${esc(P.qnote)} Deixe a tela ligada e esta aba aberta${d > 600 ? '; aulas longas levam bastante tempo (o tempo restante aparece na barra)' : ''}. ${esc(P.note)}</p>
          <div class="progress" id="rProg" hidden><span></span><em></em></div>`;
     if (same) {
       $('#rDl').onclick = async () => download(await db.getBlob(r.mediaId), `${base}.${r.ext}`);
@@ -558,10 +567,10 @@ async function viewReady(course, lessonId, fresh = false) {
       let lock = null;
       try { lock = await navigator.wakeLock?.request('screen'); } catch {}
       try {
-        const blob = await renderLesson(player, PLATFORMS[platform], { onProgress: (f) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = `Gerando ${Math.round(f * 100)}%`; } });
+        const blob = await renderLesson(player, P, { name: `export-${lesson.id}.mp4`, onProgress: (f, msg) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = msg ? `${Math.round(f * 100)}% · ${msg}` : `Gerando ${Math.round(f * 100)}%`; } });
         const mediaId = 'render:' + lesson.id;
         db.keep(mediaId, blob);
-        lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform, at: Date.now(), dur: lessonDur(lesson) };
+        lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform, quality, at: Date.now(), dur: lessonDur(lesson) };
         save();
         toast('Vídeo final pronto!', 'ok');
       } catch (e) { toast('Erro ao gerar: ' + e.message, 'err'); }
@@ -852,6 +861,7 @@ function viewClient(c) {
         <div class="style-panel" id="cStyle"></div>
         <div class="form">
           ${select('platform', 'Plataforma padrão', c.platform, Object.fromEntries(Object.entries(PLATFORMS).map(([k, v]) => [k, v.name])))}
+          ${select('quality', 'Qualidade padrão (60 fps)', c.quality || 'fhd', Object.fromEntries(Object.entries(QUALITIES).map(([k, v]) => [k, v.name])))}
           <details class="grp"><summary><b>Ritmo dos cortes secos</b><small>avançado</small></summary><div class="grp-body">
             ${range('silenceDb', 'Limiar de silêncio (dB)', c.silenceDb, -60, -20, 1)}
             ${range('minSilence', 'Pausa mínima para cortar (s)', c.minSilence, 0.15, 1.5, 0.05)}
@@ -1035,6 +1045,34 @@ function viewCourse(course) {
     });
   };
   draw();
+}
+
+// ---- Vídeos grandes: reencontrar o arquivo depois de recarregar a página ----
+async function missingSources(lesson) {
+  const out = [];
+  for (const s of lesson.sources) if (!(await db.getBlob(s.mediaId).catch(() => null))) out.push(s);
+  return out;
+}
+async function relinkBanner(lesson, onDone) {
+  const miss = await missingSources(lesson);
+  document.querySelector('.relink')?.remove();
+  if (!miss.length) return false;
+  const el = document.createElement('div');
+  el.className = 'banner warn-banner relink';
+  el.innerHTML = `<p><b>${miss.length === 1 ? 'Falta 1 vídeo' : `Faltam ${miss.length} vídeos`} neste aparelho.</b> Vídeos grandes (aulas longas, 4K) não são copiados para o navegador: o app usa o arquivo do seu aparelho. Escolha de novo ${miss.length === 1 ? 'o arquivo' : 'os arquivos'}: ${miss.map((s) => `<b>${esc(s.name)}</b>${s.size ? ` (${mb(s.size)})` : ''}`).join(', ')}.</p>
+    <label class="btn file-btn">Reencontrar vídeo${miss.length > 1 ? 's' : ''}<input type="file" accept="video/*,audio/*" multiple hidden></label>`;
+  view.prepend(el);
+  el.querySelector('input').onchange = async (e) => {
+    let n = 0;
+    for (const f of e.target.files) {
+      const s = miss.find((x) => x.name === f.name && (!x.size || x.size === f.size)) || miss.find((x) => x.name === f.name) || (miss.length === 1 ? miss[0] : null);
+      if (!s) { toast(`“${f.name}” não é um dos vídeos desta aula.`, 'err'); continue; }
+      if (s.size && s.size !== f.size) toast(`Atenção: “${f.name}” tem tamanho diferente do original. Confira se é o mesmo vídeo.`);
+      db.relink(s.mediaId, f); n++;
+    }
+    if (n) { toast(n === 1 ? 'Vídeo reencontrado' : `${n} vídeos reencontrados`, 'ok'); el.remove(); onDone?.(); }
+  };
+  return true;
 }
 
 // ======================= Editor de aula =======================
@@ -1551,20 +1589,22 @@ async function viewEditor(course, lessonId) {
 
   // ----- Aba: Exportar -----
   function tabExportar() {
-    const p = PLATFORMS[ed.platform || client.platform] || PLATFORMS.hotmart;
-    const mime = pickMime();
+    const quality = lesson.quality || client.quality || 'fhd';
+    const p = exportPreset(ed.platform || lesson.platform || client.platform, quality);
+    const dd = lessonDur(lesson);
     body.innerHTML = `
-      ${select('platform', 'Destino', ed.platform || client.platform, Object.fromEntries(Object.entries(PLATFORMS).map(([k, v]) => [k, v.name])))}
-      <p class="hint">${p.w}×${p.h} · ${p.fps} fps · ${(p.vbr / 1e6).toFixed(0)} Mbps · ${esc(p.note)}</p>
-      <p class="hint">Formato gerado pelo navegador: <b>${mime.includes('avc1') ? 'MP4 (H.264)' : mime.includes('mp4') ? 'MP4 (VP9)' : 'WebM'}</b>${mime.includes('avc1') ? '' : ' — para MP4 H.264 (máxima compatibilidade) use Google Chrome ou Edge atualizado.'}</p>
-      <p class="hint">A renderização acontece em tempo real (${fmtLong(lessonDur(lesson))}). Mantenha esta aba visível.</p>
+      ${select('platform', 'Destino', ed.platform || lesson.platform || client.platform, Object.fromEntries(Object.entries(PLATFORMS).map(([k, v]) => [k, v.name])))}
+      ${select('quality', 'Qualidade (sempre 60 fps)', quality, Object.fromEntries(Object.entries(QUALITIES).map(([k, v]) => [k, v.name])))}
+      <p class="hint">${p.w}×${p.h} · 60 fps · ${(p.vbr / 1e6).toFixed(0)} Mb/s · MP4 · arquivo de ~${mb((p.vbr / 8 + 32000) * dd)}. ${esc(p.qnote)} ${esc(p.note)}</p>
+      <p class="hint">Gera quadro a quadro, sem perder quadros. Mantenha esta aba aberta${dd > 600 ? '; aulas longas levam bastante tempo e o tempo restante aparece na barra' : ''}.</p>
       <div class="btn-row"><button class="btn" id="renderBtn">Renderizar aula</button><button class="ghost" id="cancelBtn" hidden>Cancelar</button></div>
       <div class="progress" id="rProg" hidden><span></span><em></em></div>
       <div id="rOut">${lesson.render ? renderInfo(lesson.render) : ''}</div>
       <h3>Textos para a plataforma</h3>
       <label>Descrição da aula<textarea id="lesDesc" rows="4" placeholder="Resumo da aula para o player da plataforma">${esc(lesson.description)}</textarea></label>
       <div class="btn-row"><button class="ghost small" id="autoDesc">Gerar resumo a partir da legenda</button></div>`;
-    body.querySelector('[data-k=platform]').onchange = (e) => { ed.platform = e.target.value; renderTab(); };
+    body.querySelector('[data-k=platform]').onchange = (e) => { ed.platform = e.target.value; lesson.platform = e.target.value; save(); renderTab(); };
+    body.querySelector('[data-k=quality]').onchange = (e) => { lesson.quality = e.target.value; save(); renderTab(); };
     $('#lesDesc').oninput = (e) => { lesson.description = e.target.value; save(); };
     $('#autoDesc').onclick = async () => {
       const text = timelineCaptions(lesson).map((c) => c.text).join(' ');
@@ -1596,10 +1636,10 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
       ctrl.ac = new AbortController();
       $('#cancelBtn').onclick = () => ctrl.ac.abort();
       try {
-        const blob = await renderLesson(player, p, { signal: ctrl.ac.signal, onProgress: (f) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = `Renderizando ${Math.round(f * 100)}%`; } });
+        const blob = await renderLesson(player, p, { name: `export-${lesson.id}.mp4`, signal: ctrl.ac.signal, onProgress: (f, msg) => { bar.style.width = (f * 100).toFixed(1) + '%'; lbl.textContent = msg ? `${Math.round(f * 100)}% · ${msg}` : `Renderizando ${Math.round(f * 100)}%`; } });
         const mediaId = 'render:' + lesson.id;
         db.keep(mediaId, blob);
-        lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform: ed.platform || client.platform, at: Date.now(), dur: lessonDur(lesson) };
+        lesson.render = { mediaId, size: blob.size, ext: extOf(blob), platform: ed.platform || lesson.platform || client.platform, quality, at: Date.now(), dur: lessonDur(lesson) };
         save();
         toast('Aula renderizada!', 'ok');
         renderTab();
@@ -1612,7 +1652,7 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
   }
 
   function renderInfo(r) {
-    return `<div class="render-ok"><b>✓ Pronta</b> · ${mb(r.size)} · ${r.ext.toUpperCase()} · ${esc(PLATFORMS[r.platform]?.name || '')}
+    return `<div class="render-ok"><b>✓ Pronta</b> · ${mb(r.size)} · ${r.ext.toUpperCase()} · ${esc(PLATFORMS[r.platform]?.name || '')} · ${esc(QUALITIES[r.quality || 'fhd']?.name || '')}
       <div class="btn-row"><button class="btn small" id="dlVid">Baixar vídeo</button><button class="ghost small" id="dlSrt">Baixar .srt</button></div></div>`;
   }
   function bindRenderInfo() {
@@ -1629,6 +1669,7 @@ ${text.slice(0, 12000)}`, { modelTier: 'quick' });
   await player.setLesson(lesson, client);
   for (const s of lesson.sources) loadEnv(s);
   tlx.initialView();
+  relinkBanner(lesson, async () => { await player.setLesson(lesson, client); for (const s of lesson.sources) loadEnv(s); tlx.draw(); });
   drawTimeline();
   updateStats();
   const prevDispose = ed.dispose;
@@ -1671,7 +1712,8 @@ function stylePanelHTML(c) {
       ${select('cardVariant', 'Modelo de destaque', c.cardVariant || 'auto', CARD_VARIANTS)}
       <label>Etiqueta acima do destaque<input data-k="cardEyebrow" value="${esc(c.cardEyebrow ?? st.card.eyebrow ?? '')}" placeholder="Ex.: PONTO-CHAVE (vazio = sem etiqueta)"></label>
       ${select('expertSide', 'Posição do expert', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}`)}
-    ${grp('imagem', 'Imagem e elementos', 'cor, zoom, abertura, nome + CRM, logo', `
+    ${grp('cor', 'Color grading (cor de cinema)', c.grade?.look ? esc(GRADE_LOOKS[c.grade.look]?.name || '') + (c.grade.lutId ? ' + LUT' : '') : c.grade?.lutId ? 'LUT próprio' : 'desligado', gradeHTML(c))}
+    ${grp('imagem', 'Imagem e elementos', 'zoom, abertura, nome + CRM, logo', `
       ${select('look', 'Cor da imagem', c.look || 'auto', { auto: 'Do modelo', ...Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])) })}
       ${range('focusX', 'Centro do rosto (zoom e vertical)', c.focusX ?? 0.5, 0, 1, 0.01)}
       <div class="checks">
@@ -1683,12 +1725,85 @@ function stylePanelHTML(c) {
         ${check('watermark', 'Logo no canto', c.watermark)}
       </div>`)}
     ${grp('sons', 'Efeitos sonoros', c.sfx ? 'ligados' : 'desligados', sfxBlock(c).replace('<h3>Efeitos sonoros</h3>', ''))}
-    ${grp('audio', 'Áudio da exportação', [c.jcut !== false && 'corte em J', c.levelTakes !== false && 'takes nivelados', c.loudnorm !== false && '−14 LUFS'].filter(Boolean).join(' · ') || 'padrão', `
+    ${grp('audio', 'Áudio profissional', [VOICE_PRESETS[c.voicePreset || 'estudio']?.name.split(' (')[0], c.jcut !== false && 'corte em J', c.levelTakes !== false && 'takes nivelados', c.loudnorm !== false && '−14 LUFS'].filter(Boolean).join(' · ') || 'padrão', `
+      ${select('voicePreset', 'Tratamento de voz', c.voicePreset || (c.cleanVoice === false ? 'nenhum' : 'estudio'), Object.fromEntries(Object.entries(VOICE_PRESETS).map(([k, v]) => [k, v.name])))}
+      <p class="hint">Remove ruído de fundo, suaviza os “s” chiados, equaliza e comprime a voz como nas ferramentas profissionais. A limpeza de ruído é aplicada no vídeo exportado; a prévia já mostra a equalização.</p>
       ${check('jcut', 'Corte em J: a voz do próximo take entra 0,15 s antes da imagem (cortes sem “buraco”)', c.jcut !== false)}
       ${check('levelTakes', 'Nivelar o volume entre takes (no máximo ±6 dB)', c.levelTakes !== false)}
       ${check('loudnorm', 'Volume padrão das plataformas (≈ −14 LUFS, picos em −1 dB)', c.loudnorm !== false)}
       <p class="hint">Valem para o vídeo exportado. Ficam ligados por padrão, como no Edvid.</p>`)}
     ${grp('trilha', 'Trilha sonora', esc(TRACKS[c.music || 'nenhuma']?.name || ''), `<div data-music-box>${musicBlock(c)}</div>`)}`;
+}
+
+// ---- Color grading: looks com um clique, ajustes finos e LUTs próprios (.cube) ----
+const GRADE_ADJ = [
+  ['exposure', 'Exposição', -1, 1, 0.02], ['contrast', 'Contraste', -0.5, 0.5, 0.01], ['saturation', 'Saturação', -1, 1, 0.02],
+  ['temp', 'Temperatura (frio ↔ quente)', -1, 1, 0.02], ['tint', 'Matiz (verde ↔ magenta)', -1, 1, 0.02],
+  ['shadows', 'Sombras', -1, 1, 0.02], ['highlights', 'Realces', -1, 1, 0.02], ['vignette', 'Vinheta', 0, 1, 0.02], ['grain', 'Granulado de filme', 0, 1, 0.02],
+];
+function gradeHTML(c) {
+  const g = c.grade || {}, a = g.adj || {};
+  const luts = c.luts || [];
+  if (!gradingAvailable()) return '<p class="hint">Este aparelho não tem aceleração gráfica (WebGL2) para color grading. Use o Chrome, Edge ou Safari atualizado.</p>';
+  return `
+    <p class="hint">Escolha um look com um toque. Os looks seguem o fluxo de correção de cor do DaVinci Resolve (balanço, contraste com pivô, curva de filme, tons divididos) e são aplicados também no vídeo exportado em 4K.</p>
+    <div class="look-grid">
+      <button type="button" class="look ${!g.look ? 'on' : ''}" data-look=""><canvas width="320" height="180" data-lthumb=""></canvas><b>Original</b><small>Sem correção de cor</small></button>
+      ${Object.entries(GRADE_LOOKS).map(([k, v]) => `<button type="button" class="look ${g.look === k ? 'on' : ''}" data-look="${k}"><canvas width="320" height="180" data-lthumb="${k}"></canvas><b>${esc(v.name)}</b><small>${esc(v.hint)}</small></button>`).join('')}
+    </div>
+    <label>Intensidade do look <output>${Math.round((g.amount ?? 1) * 100)}%</output><input type="range" data-gk="amount" min="0" max="1.5" step="0.05" value="${g.amount ?? 1}"></label>
+    <details class="sub"><summary>Ajustes finos</summary>
+      ${GRADE_ADJ.map(([k, l, mn, mx, st]) => `<label>${l} <output>${(a[k] || 0).toFixed(2)}</output><input type="range" data-ga="${k}" min="${mn}" max="${mx}" step="${st}" value="${a[k] || 0}"></label>`).join('')}
+      <button type="button" class="ghost small" id="gradeReset">Zerar ajustes finos</button>
+    </details>
+    <p class="side-label">LUTs próprios (.cube)</p>
+    <p class="hint">Importe LUTs 3D do DaVinci Resolve, Premiere ou de cursos que você comprou (ex.: os LUTs do curso que você faz). Eles ficam no perfil do cliente.</p>
+    <div class="btn-row"><label class="ghost file-btn">Importar LUT .cube<input type="file" id="lutIn" accept=".cube,text/plain" hidden></label>
+      ${luts.length ? `<select id="lutSel"><option value="">Sem LUT</option>${luts.map((l) => `<option value="${esc(l.id)}" ${g.lutId === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>` : ''}</div>
+    ${g.lutId ? `<label>Intensidade do LUT <output>${Math.round((g.lutAmount ?? 1) * 100)}%</output><input type="range" data-gk="lutAmount" min="0" max="1" step="0.05" value="${g.lutAmount ?? 1}"></label>` : ''}`;
+}
+
+function bindGrade(root, c, changed, rerender) {
+  const box = root.querySelector('[data-grp="cor"]'); if (!box) return;
+  const G = () => (c.grade = c.grade || {});
+  const draw = () => {
+    box.querySelectorAll('[data-lthumb]').forEach((cv, i) => setTimeout(() => {
+      const k = cv.dataset.lthumb;
+      drawStylePreview(cv, c, { grade: k ? { ...G(), look: k, amount: c.grade?.amount ?? 1 } : (c.grade?.lutId ? { lutId: c.grade.lutId, lutAmount: c.grade.lutAmount } : null), openingTitle: false });
+    }, i * 16));
+  };
+  draw();
+  box.querySelectorAll('[data-look]').forEach((b) => (b.onclick = () => {
+    G().look = b.dataset.look || undefined;
+    if (!b.dataset.look && !c.grade.lutId && !c.grade.adj) c.grade = null;
+    save(); changed(); box.querySelectorAll('[data-look]').forEach((x) => x.classList.toggle('on', x === b));
+    const sm = box.querySelector('summary small'); if (sm) sm.textContent = b.dataset.look ? GRADE_LOOKS[b.dataset.look].name : 'desligado';
+  }));
+  box.querySelectorAll('[data-gk]').forEach((r) => (r.oninput = () => { G()[r.dataset.gk] = parseFloat(r.value); r.parentElement.querySelector('output').textContent = Math.round(r.value * 100) + '%'; save(); changed(); }));
+  box.querySelectorAll('[data-ga]').forEach((r) => (r.oninput = () => { const g = G(); g.adj = g.adj || {}; g.adj[r.dataset.ga] = parseFloat(r.value); r.parentElement.querySelector('output').textContent = (+r.value).toFixed(2); save(); changed(); }));
+  box.querySelector('#gradeReset').onclick = () => { if (c.grade) delete c.grade.adj; save(); changed(); rerender(); };
+  box.querySelector('#lutIn').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      const txt = await f.text();
+      const lut = parseCube(txt);
+      const id = uid('lut');
+      await db.putMedia(id, new Blob([txt], { type: 'text/plain' }));
+      setLut(id, lut);
+      c.luts = [...(c.luts || []), { id, name: f.name.replace(/\.cube$/i, '') }];
+      G().lutId = id; G().lutAmount = 1;
+      save(); window.dispatchEvent(new Event('ec-media-added'));
+      toast(`LUT “${f.name}” importado (${lut.size}³) e aplicado`, 'ok');
+      changed(); rerender();
+    } catch (err) { toast(err.message || 'Não consegui ler este LUT.', 'err'); }
+  };
+  const sel = box.querySelector('#lutSel');
+  if (sel) sel.onchange = async () => {
+    G().lutId = sel.value || null;
+    if (sel.value) { const { ensureLut } = await import('./grade.js'); const { loadLutText } = await import('./player.js'); await ensureLut(sel.value, loadLutText); }
+    save(); changed(); rerender();
+  };
 }
 
 function bindStylePanel(root, c, player, onChange) {
@@ -1720,8 +1835,9 @@ function bindStylePanel(root, c, player, onChange) {
     root.querySelector('[data-k=text]').value = p.text;
     changed();
   }));
-  bindForm(root, c, (k) => { if (k === 'cleanVoice') player?.refreshAudio(); if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
+  bindForm(root, c, (k) => { if (k === 'cleanVoice' || k === 'voicePreset') { if (k === 'voicePreset') c.cleanVoice = c.voicePreset !== 'nenhum'; player?.refreshAudio(); } if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
   bindSfxPreview(root, c, player);
+  bindGrade(root, c, () => { player?.draw(); changed(); }, () => { const y = root.closest('.tab-body, main')?.scrollTop; root.innerHTML = stylePanelHTML(c); bindStylePanel(root, c, player, onChange); });
   bindMusic(root.querySelector('[data-music-box]'), c, onChange);
   drawThumbs(root, c);
 }
@@ -1819,10 +1935,10 @@ Use as ferramentas para aplicar os ajustes pedidos (consulte ver_estado quando p
 // ======================= Central de exportação =======================
 function viewExport(course) {
   const c = getClient(course.clientId);
-  let platform = c.platform;
+  let platform = c.platform, quality = c.quality || 'fhd';
   const all = course.modules.flatMap((m, mi) => m.lessons.map((l, li) => ({ m, mi, l, li })));
   const draw = () => {
-    const p = PLATFORMS[platform];
+    const p = exportPreset(platform, quality);
     const ready = all.filter((x) => x.l.render).length;
     view.innerHTML = `
       <header class="page-head">
@@ -1832,9 +1948,10 @@ function viewExport(course) {
         <section class="panel">
           <h2>Destino</h2>
           <div class="platforms">
-            ${Object.entries(PLATFORMS).map(([k, v]) => `<button class="plat ${k === platform ? 'on' : ''}" data-p="${k}"><b>${esc(v.name)}</b><small>${v.w}×${v.h}</small></button>`).join('')}
+            ${Object.entries(PLATFORMS).map(([k, v]) => `<button class="plat ${k === platform ? 'on' : ''}" data-p="${k}"><b>${esc(v.name)}</b><small>${v.h > v.w ? '9:16 vertical' : '16:9'}</small></button>`).join('')}
           </div>
-          <p class="hint">${esc(p.note)}</p>
+          <label>Qualidade (sempre 60 fps)<select id="expQual">${Object.entries(QUALITIES).map(([k, v]) => `<option value="${k}" ${k === quality ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+          <p class="hint">${p.w}×${p.h} · 60 fps · ${(p.vbr / 1e6).toFixed(0)} Mb/s. ${esc(p.note)}</p>
           <h2>Aulas <small class="muted">${ready}/${all.length} prontas</small></h2>
           <ul class="exp-list">
             ${all.map(({ m, mi, l, li }) => `<li>
@@ -1862,6 +1979,7 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
         </section>
       </div>`;
     view.querySelectorAll('[data-p]').forEach((b) => (b.onclick = () => { platform = b.dataset.p; draw(); }));
+    $('#expQual').onchange = (e) => { quality = e.target.value; draw(); };
     $('#csvBtn').onclick = () => download(new Blob(['﻿' + csv()], { type: 'text/csv' }), slug(course.title) + '-grade.csv');
     $('#zipBtn').onclick = zip;
     $('#renderAll').onclick = renderAll;
@@ -1886,13 +2004,14 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
         const { m, l } = todo[n];
         player.meta = { module: m.title };
         await player.setLesson(l, c);
-        const blob = await renderLesson(player, PLATFORMS[platform], {
+        const blob = await renderLesson(player, exportPreset(platform, quality), {
+          name: `export-${l.id}.mp4`,
           signal: ac.signal,
           onProgress: (f) => { bar.style.width = ((n + f) / todo.length * 100).toFixed(1) + '%'; lbl.textContent = `Aula ${n + 1}/${todo.length}: ${l.title} — ${Math.round(f * 100)}%`; },
         });
         const mediaId = 'render:' + l.id;
         db.keep(mediaId, blob);
-        l.render = { mediaId, size: blob.size, ext: extOf(blob), platform, at: Date.now(), dur: lessonDur(l) };
+        l.render = { mediaId, size: blob.size, ext: extOf(blob), platform, quality, at: Date.now(), dur: lessonDur(l) };
         save();
       }
       toast('Todas as aulas renderizadas!', 'ok');
@@ -1909,10 +2028,14 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
     btn.disabled = true; btn.textContent = 'Montando pacote…';
     const z = new JSZip();
     const root = z.folder(slug(course.title));
+    // vídeos muito grandes (aulas longas/4K) não cabem num .zip montado no navegador: saem como arquivos separados
+    const big = all.reduce((a, x) => a + (x.l.render?.size || 0), 0) > 1.5 * 1024 ** 3;
+    const separate = [];
     for (const { m, mi, l, li } of all) {
       const dir = root.folder(`${String(mi + 1).padStart(2, '0')}-${slug(m.title)}`);
       const base = `${String(li + 1).padStart(2, '0')}-${slug(l.title)}`;
-      if (l.render) dir.file(`${base}.${l.render.ext}`, await db.getBlob(l.render.mediaId), { binary: true, compression: 'STORE' });
+      if (l.render && big) separate.push({ id: l.render.mediaId, name: `${String(mi + 1).padStart(2, '0')}-${base}.${l.render.ext}` });
+      else if (l.render) dir.file(`${base}.${l.render.ext}`, await db.getBlob(l.render.mediaId), { binary: true, compression: 'STORE' });
       const caps = timelineCaptions(l);
       if (caps.length) dir.file(`${base}.srt`, srt(caps));
       if (l.description || l.chapters) dir.file(`${base}-descricao.txt`, [l.description, l.chapters && 'Capítulos:\n' + l.chapters].filter(Boolean).join('\n\n'));
@@ -1921,6 +2044,10 @@ ${m.lessons.map((l, li) => `    ${String(li + 1).padStart(2, '0')}-${slug(l.titl
     root.file('descricao-do-curso.txt', `${course.title}\n${c.name}${c.crm ? ' — ' + c.crm : ''}\n\n${course.description}\n\nPalavras-chave: ${c.keywords.join(', ')}`);
     const blob = await z.generateAsync({ type: 'blob', streamFiles: true });
     download(blob, `${slug(course.title)}-${platform}.zip`);
+    if (separate.length) {
+      toast(`Os vídeos são grandes demais para um .zip: vou baixar ${pl(separate.length, 'vídeo', 'vídeos')} separado${separate.length > 1 ? 's' : ''} (legendas e textos estão no .zip).`);
+      for (const f of separate) { const b = await db.getBlob(f.id); if (b) await download(b, f.name); }
+    }
     btn.disabled = false; btn.textContent = 'Baixar pacote .zip';
   }
   draw();
@@ -1963,8 +2090,8 @@ async function syncMedia() {
   mediaSyncing = true;
   try {
     const ids = new Set();
-    for (const c of state.clients) if (c.logoMediaId) ids.add(c.logoMediaId);
-    for (const k of state.courses) for (const m of k.modules) for (const l of m.lessons) for (const src of l.sources) ids.add(src.mediaId);
+    for (const c of state.clients) { if (c.logoMediaId) ids.add(c.logoMediaId); for (const l of c.luts || []) ids.add(l.id); }
+    // vídeos ficam no aparelho (preferência da Rebeca): a nuvem guarda os projetos, logos e LUTs
     for (const id of ids) {
       if (state.media[id]) continue;
       const blob = await db.getBlob(id);
@@ -2022,4 +2149,25 @@ const busy = () => editor?.player?.playing || document.querySelector('#rProg:not
 
   } else setCloudStatus({ state: 'off', text: 'Só neste aparelho' });
   startMarketing(onMktChange).catch((e) => console.warn('Estúdio de Marketing', e));
+  // backup dos projetos no Google Drive + espaço usado no aparelho
+  startAutoBackup();
+  onBackup((b) => { const t = $('#bkTxt'); if (t) { t.textContent = b.text || 'Backup dos projetos no Google Drive'; t.dataset.state = b.state; } });
+  $('#bkNow').onclick = async () => { const ok = await backupNow(); toast(ok ? 'Backup feito no seu Google Drive (pasta “Estúdio de Cursos — backups”)' : 'Backup não feito. Veja o aviso no menu.', ok ? 'ok' : 'err'); };
+  $('#bkIn').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      if (!(await ask('Restaurar este backup? Clientes e cursos do backup substituem os de mesmo nome neste aparelho.'))) return;
+      const r = await restoreBackup(f);
+      save(); route();
+      toast(`Backup restaurado: ${pl(r.clients, 'cliente', 'clientes')}, ${pl(r.courses, 'curso', 'cursos')}`, 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+  };
+  const store = async () => {
+    const i = await storageInfo(), el = $('#bkStore');
+    if (!el) return;
+    const cp = copyProgress();
+    el.textContent = cp.length ? `Guardando vídeo grande no aparelho… ${Math.round(cp[0] * 100)}%` : i ? `Neste aparelho: ${mb(i.used)} usados · ${mb(Math.max(0, i.quota - i.used))} livres para o app` : 'Vídeos guardados neste aparelho';
+  };
+  store(); setInterval(store, 4000);
 })();

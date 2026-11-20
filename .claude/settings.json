@@ -16,7 +16,20 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/bloqueia-segredos.py\"" }
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/bloqueia-segredos.py\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '== Memória da Rebeca (MEMORIA.md) =='; sed -n '1,200p' \"$CLAUDE_PROJECT_DIR/MEMORIA.md\""
+          }
         ]
       }
     ]

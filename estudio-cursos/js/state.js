@@ -23,7 +23,9 @@ export async function load() {
     if (c.sfx === undefined) c.sfx = true;
     if (c.sfxVol === undefined) c.sfxVol = 0.5;
     if (!c.template) { c.template = 'clinico'; c.look = 'auto'; c.captionStyle = 'auto'; }
+    if (['master4k', 'hd60', 'rascunho'].includes(c.platform)) { if (c.platform === 'master4k') c.quality = 'uhd'; c.platform = 'hotmart'; }
   }
+  for (const k of state.courses) for (const m of k.modules) for (const l of m.lessons) if (['master4k', 'hd60', 'rascunho'].includes(l.platform)) { if (l.platform === 'master4k') l.quality = 'uhd'; l.platform = 'hotmart'; }
   if (!state.clients.length) seed();
 }
 

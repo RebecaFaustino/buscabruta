@@ -117,3 +117,8 @@ Os limites das plataformas mudam. Se houver erro de upload, o mais comum é o ta
 
 ## Repetições de gravação
 Quando o expert errou e regravou a frase, use `--sem-repeticoes` no `renderizar`: sai a tentativa errada e fica só a última (a detecção usa a transcrição).
+
+## Cor de cinema (LUT) e qualidade
+- `--lut arquivo.cube` aplica um LUT 3D do DaVinci Resolve/Premiere (ex.: os LUTs que a Rebeca comprou em cursos); `--intensidade-lut 0.6` mistura com o original.
+- Saída sempre a 60 fps por padrão; `--resolucao 1080` (Full HD), `1440` (2K) ou `4k`. Nunca entregue abaixo de Full HD 60 fps.
+- Para aulas longas (1 h ou mais) em 4K, este caminho (ffmpeg no notebook) é bem mais rápido que exportar pelo navegador.

@@ -391,12 +391,15 @@ LOOKS = {
 VOZ = 'highpass=f=85,equalizer=f=300:t=q:w=1:g=-2.5,equalizer=f=3200:t=q:w=0.9:g=3,acompressor=threshold=-24dB:ratio=3:attack=5:release=200:makeup=2,loudnorm=I=-16:TP=-1.5:LRA=11'
 
 
+LUT_VF = ''  # filtro de LUT .cube (DaVinci/Premiere), aplicado em cada trecho
+
+
 def encode_segment(args):
     video, i, a, b, zoom, fx, W, H, fps, pasta = args
     out = pasta / 'seg' / f'{i:05d}.mp4'
     z = zoom
     vf = (f'scale={int(W*z)}:{int(H*z)}:force_original_aspect_ratio=increase,'
-          f'crop={W}:{H}:(iw-{W})*{fx}:(ih-{H})*0.38,setsar=1,fps={fps}')
+          f'crop={W}:{H}:(iw-{W})*{fx}:(ih-{H})*0.38,setsar=1,fps={fps}{LUT_VF}')
     d = b - a
     af = f'afade=t=in:d=0.015,afade=t=out:st={max(0, d - 0.02):.3f}:d=0.02,aresample=48000'
     run(['ffmpeg', '-y', '-v', 'error', '-ss', f'{a:.3f}', '-i', str(video), '-t', f'{d:.3f}', '-vf', vf, '-af', af,
@@ -451,8 +454,17 @@ def cmd_renderizar(a):
         for r0, r1 in rep: trechos = tirar_intervalo(trechos, r0, r1)
         print(f'  {len(rep)} repetição(ões) de gravação removida(s)', flush=True)
     a.palavras = [p.strip() for p in (a.palavras or '').split(',') if p.strip()]
-    fps = a.fps or round(info['fps']) or 30
-    W, H = (3840, 2160) if a.resolucao == '4k' else (1920, 1080)
+    fps = a.fps or 60  # padrão: 60 fps (nunca abaixo de Full HD 60)
+    global LUT_VF
+    if a.lut:
+        lut = Path(a.lut).resolve()
+        if not lut.exists(): raise SystemExit(f'LUT não encontrado: {lut}')
+        esc = str(lut).replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
+        LUT_VF = f",lut3d=file='{esc}':interp=tetrahedral"
+        if a.intensidade_lut < 1:  # mistura com o original
+            LUT_VF = f",split[o][l];[l]lut3d=file='{esc}':interp=tetrahedral[g];[o][g]blend=all_expr='A*{1 - a.intensidade_lut:.2f}+B*{a.intensidade_lut:.2f}'"
+        print(f'  LUT: {lut.name} ({int(a.intensidade_lut * 100)}%)', flush=True)
+    W, H = {'4k': (3840, 2160), '1440': (2560, 1440)}.get(a.resolucao, (1920, 1080))
     if a.resolucao == '4k' and a.preset == 'medium': a.preset = 'veryfast'  # 4K: mantém o tempo razoável
     fx = {'esquerda': 0.35, 'direita': 0.65, 'centro': 0.5}.get(a.lado, 0.5) if a.foco is None else a.foco
     (pasta / 'seg').mkdir(exist_ok=True)
@@ -541,8 +553,10 @@ def main():
     rd.add_argument('--sem-cortes', action='store_true'); rd.add_argument('--sem-abertura', dest='abertura', action='store_false')
     rd.add_argument('--dur-cartao', type=float, default=2.8)
     rd.add_argument('--preset', default='medium')
-    rd.add_argument('--resolucao', default='1080', choices=['1080', '4k'], help='4k = 3840x2160 (2160x3840 na vertical)')
-    rd.add_argument('--fps', type=int, help='quadros por segundo da saída (ex.: 60); padrão = o do vídeo original')
+    rd.add_argument('--resolucao', default='1080', choices=['1080', '1440', '4k'], help='1080 = Full HD, 1440 = 2K, 4k = 3840x2160 (vertical: invertido)')
+    rd.add_argument('--lut', help='arquivo .cube (LUT 3D do DaVinci Resolve/Premiere) para a cor do vídeo')
+    rd.add_argument('--intensidade-lut', type=float, default=1.0, help='0 a 1 (padrão 1 = LUT inteiro)')
+    rd.add_argument('--fps', type=int, help='quadros por segundo da saída; padrão 60')
     rd.add_argument('--sem-efeitos', dest='efeitos', action='store_false', help='não adicionar efeitos sonoros')
     rd.add_argument('--volume-efeitos', type=float, default=0.5)
     rd.add_argument('--trilha', default='nenhuma', choices=['nenhuma', *TRILHAS], help='trilha de fundo composta na hora (sem direitos autorais)')
