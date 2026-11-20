@@ -14,6 +14,7 @@ const ICON = {
   text: '<path d="M3.5 4.5h9M8 4.5v8M6 12.5h4"/>',
   video: '<rect x="2" y="4.5" width="8.5" height="7" rx="1.5"/><path d="m10.5 7 3.5-2v6l-3.5-2"/>',
   voice: '<path d="M2.5 8h1M5 5.5v5M7.5 3.5v9M10 6v4M12.5 7.5v1"/>',
+  anim: '<path d="M8 2.5v3M8 10.5v3M2.5 8h3M10.5 8h3M4.3 4.3l1.6 1.6M10.1 10.1l1.6 1.6M11.7 4.3l-1.6 1.6M5.9 10.1l-1.6 1.6"/>',
   music: '<path d="M6 11.5V4l6.5-1.5V10"/><circle cx="4.5" cy="11.5" r="1.5"/><circle cx="11" cy="10" r="1.5"/>',
   undo: '<path d="M5.5 4 3 6.5 5.5 9"/><path d="M3 6.5h6.5a3.5 3.5 0 0 1 0 7H7"/>',
   redo: '<path d="M10.5 4 13 6.5 10.5 9"/><path d="M13 6.5H6.5a3.5 3.5 0 0 0 0 7H9"/>',
@@ -158,6 +159,8 @@ export function createTimeline(host, o) {
     if (caps.length) track('captions', 'teal', 'Legendas', caps.filter((p) => inView(p.s, p.e)).map((p) => block('chip capt', p.s, p.e, esc(p.text))).join(''));
     const cards = player.cardsT || [];
     if (cards.length) track('text', 'orange', 'Destaques', cards.filter((k) => inView(k.T, k.T + (k.dur || 3))).map((k) => block('chip head', k.T, k.T + (k.dur || 3), esc(k.text))).join(''));
+    const lots = player.lottiesT || [];
+    if (lots.length) track('anim', 'olive', 'Animações (After Effects)', lots.filter((k) => inView(k.T, k.T + k.dur)).map((k) => block('chip mus', k.T, k.T + k.dur, esc(k.name))).join(''));
     track('video', 'orange', 'Vídeo', clips.map((c, i) => {
       const t0 = starts[i] ?? 0, t1 = t0 + (c.out - c.in);
       if (!inView(t0, t1) && i !== st.sel) return '';

@@ -2,6 +2,7 @@
 import { fontStack, ensureFont } from './fonts.js';
 import { presetChain, voicePreset } from './audiopro.js';
 import { gradeParams, gradeImage, ensureLut } from './grade.js';
+import { transitionAt, drawTransitionOverlay, cardPhase, EASE, clamp01, ensureLottie, drawLottie } from './motion.js';
 import { db } from './db.js';
 import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
@@ -72,6 +73,7 @@ export class Player {
     try { await this.loadSources(lesson); } finally { this.host?.classList.remove('loading'); }
     await Promise.all([ensureFont(client.fontTitle), ensureFont(client.fontBody)]).catch(() => {});
     if (client.grade?.lutId) await ensureLut(client.grade.lutId, loadLutText);
+    await Promise.all((lesson.lotties || []).map((k) => ensureLottie(k.mediaId, loadLottieJSON)));
     this.logo = null;
     if (client.logoMediaId) {
       const img = new Image();
@@ -112,6 +114,7 @@ export class Player {
     this.starts = starts;
     this.total = acc;
     this.cardsT = this.lesson.cards.map((k) => ({ ...k, T: srcToTimeline(this.lesson.clips, k.srcId, k.t) })).filter((k) => k.T !== null);
+    this.lottiesT = (this.lesson.lotties || []).map((k) => ({ ...k, T: srcToTimeline(this.lesson.clips, k.srcId, k.t) })).filter((k) => k.T !== null);
   }
 
   get duration() { return this.total || 0; }
@@ -261,7 +264,7 @@ export class Player {
 
   // ---------- Composição ----------
   // Prévia ao vivo: o próprio <video> fica na tela (funciona no iPhone) e o canvas transparente desenha os grafismos por cima.
-  liveVideo(c, local, st, graded) {
+  liveVideo(c, local, st, graded, tfx) {
     const cl = this.client || {};
     for (const [id, v] of this.videos) {
       const on = id === c.srcId;
@@ -272,10 +275,12 @@ export class Player {
     let zoom = c.zoom || 1;
     if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
     const fx = cl.focusX ?? 0.5;
-    const tf = `scale(${zoom.toFixed(4)})`, org = `${(fx * 100).toFixed(1)}% 38%`;
+    zoom *= tfx?.scale || 1;
+    const tf = `translateX(${((tfx?.dx || 0) * 100).toFixed(2)}%) scale(${zoom.toFixed(4)})`, org = `${(fx * 100).toFixed(1)}% 38%`;
     if (v._tf !== tf) { v.style.transform = tf; v._tf = tf; }
     if (v._org !== org) { v.style.transformOrigin = org; v._org = org; }
-    const flt = graded ? 'none' : lookFilter(cl, st);
+    const bl = tfx?.blur ? ` blur(${(tfx.blur * 0.6).toFixed(1)}px)` : '';
+    const flt = ((graded ? 'none' : lookFilter(cl, st)) + bl).replace(/^none blur/, 'blur');
     if (v._flt !== flt) { v.style.filter = flt; v._flt = flt; }
     // com color grading, o vídeo fica invisível e o quadro colorido é desenhado no canvas por cima
     const op = graded ? '0' : '1';
@@ -315,7 +320,8 @@ export class Player {
     const i = this.clipAt(T), c = this.lesson.clips[i];
     const local = (T - this.starts[i]) / Math.max(0.001, c.out - c.in);
     const gp = gradeParams(cl);
-    if (live) this.liveVideo(c, local, st, !!gp);
+    const tfx = transitionAt(cl.transition, T, this.starts, this.lesson.clips);
+    if (live) this.liveVideo(c, local, st, !!gp, tfx);
     if (!live || gp) {
       // na exportação quadro a quadro, o quadro vem decodificado (this.frame) em vez do <video>
       const fr = this.frame;
@@ -325,6 +331,7 @@ export class Player {
       if (img && vw) {
         let zoom = c.zoom || 1;
         if (cl.smoothZoom) zoom *= 1 + 0.035 * local;
+        zoom *= tfx.scale;
         const sc = Math.max(W / vw, H / vh) * zoom;
         const dw = vw * sc, dh = vh * sc;
         const fx = cl.focusX ?? 0.5, fy = 0.38;
@@ -332,12 +339,14 @@ export class Player {
         const tx = vertical ? 0.5 : fx;
         let dx = W * tx - fx * dw, dy = H * fy - fy * dh;
         dx = Math.min(0, Math.max(W - dw, dx)); dy = Math.min(0, Math.max(H - dh, dy));
+        dx += tfx.dx * W;
+        if (tfx.blur) g.filter = `blur(${(tfx.blur * W / 1920).toFixed(1)}px)`;
         try {
           const ok = live ? (img.readyState >= 2) : true;
           const gw = Math.min(vw, Math.ceil(dw)), gh = Math.round((gw * vh) / vw);
           const graded = gp && ok ? gradeImage(img, gw, gh, gp) : null;
           if (graded) g.drawImage(graded, dx, dy, dw, dh);
-          else if (!live) { g.filter = lookFilter(cl, st); g.drawImage(img, dx, dy, dw, dh); }
+          else if (!live) { const lf = lookFilter(cl, st); g.filter = [lf !== 'none' ? lf : '', tfx.blur ? `blur(${(tfx.blur * W / 1920).toFixed(1)}px)` : ''].join(' ').trim() || 'none'; g.drawImage(img, dx, dy, dw, dh); }
           else if (gp && !ok) { /* aguardando o quadro */ }
         } catch (e) { /* quadro indisponível neste instante */ }
         g.filter = 'none';
@@ -346,6 +355,7 @@ export class Player {
     const u = H / 1080;
     const side = cl.expertSide === 'right' ? 'left' : 'right'; // lado dos destaques
     drawFrameFx(g, W, H, u, st, T);
+    drawTransitionOverlay(g, W, H, tfx, T, st.accent);
 
     // Nome + CRM do lado do expert
     if (cl.lowerThird && T > 3.4 && T < 9) {
@@ -356,7 +366,13 @@ export class Player {
       const dt = T - k.T;
       if (dt < 0 || dt > k.dur) continue;
       const a = Math.min(ease(dt / 0.35), 1 - ease((dt - k.dur + 0.3) / 0.3));
-      drawCard(g, k, a, side, W, H, u, st);
+      drawCard(g, k, a, side, W, H, u, st, { anim: cl.cardAnim || 'deslizar', ...cardPhase(dt, k.dur), dt });
+    }
+    // animações Lottie (exportadas do After Effects)
+    for (const it of this.lottiesT || []) {
+      const dt = T - it.T;
+      if (dt < 0 || dt > it.dur) continue;
+      drawLottie(g, it, dt, W, H, side === 'right');
     }
     if (st.caption.mode !== 'nenhuma') drawCaptions(g, this.caps, T, W, H, u, st, cl);
     if (cl.watermark && this.logo) {
@@ -421,7 +437,7 @@ function sampleScene(side) {
 }
 
 // Desenha a prévia de um estilo (modelo, cores, legenda, destaque, nome + CRM) sobre a cena ilustrada.
-export function drawStylePreview(canvas, client, override = {}, { T = 4.6, title = 'Aula de exemplo' } = {}) {
+export function drawStylePreview(canvas, client, override = {}, { T = 4.6, title = 'Aula de exemplo', cardDt = 1, cut = false } = {}) {
   const cl = { ...client, ...override };
   const p = new Player(document.createElement('canvas'));
   const word = (cl.keywords || [])[0] || 'destaque';
@@ -430,7 +446,9 @@ export function drawStylePreview(canvas, client, override = {}, { T = 4.6, title
   p.starts = [0]; p.total = 20; p.T = T;
   const words = ['Hoje', 'vamos', 'falar', 'sobre', word].map((w, i) => ({ w, s: T - 0.9 + i * 0.22, e: T - 0.7 + i * 0.22 }));
   p.caps = [{ s: T - 1, e: T + 2, text: words.map((w) => w.w).join(' '), words }];
-  p.cardsT = [{ T: T - 1, dur: 4, text: word, sub: '' }];
+  p.cardsT = [{ T: T - cardDt, dur: 4, text: word, sub: '' }];
+  // prévia de transição: simula um corte no instante 5 s
+  if (cut) { p.lesson.clips = [{ srcId: '_', in: 0, out: 5 }, { srcId: '_', in: 5, out: 20 }]; p.starts = [0, 5]; }
   p.frame = { img: sampleScene(cl.expertSide === 'right' ? 'right' : 'left'), w: 1280, h: 720 };
   p.draw(canvas);
 }
@@ -529,7 +547,7 @@ function drawEyebrow(g, text, x, y, st, u, align, dark) {
 }
 
 // Cartões de destaque (variam por modelo)
-function drawCard(g, k, a, side, W, H, u, st) {
+function drawCard(g, k, a, side, W, H, u, st, m = {}) {
   const cs = st.card;
   const text = cs.upper ? k.text.toUpperCase() : k.text.charAt(0).toUpperCase() + k.text.slice(1);
   const maxW = W * 0.38;
@@ -544,11 +562,26 @@ function drawCard(g, k, a, side, W, H, u, st) {
   const h = fs * 1.05 + padY * 2 + subH;
   const right = side === 'right';
   const x = right ? W - w - 90 * u : 90 * u;
-  const y = H * 0.34 - h / 2 + eb / 2;
-  const off = (1 - a) * 50 * u * (right ? 1 : -1);
+  let y = H * 0.34 - h / 2 + eb / 2;
+  // animação de entrada (curvas no padrão After Effects)
+  const anim = m.anim || 'deslizar', pin = m.pin ?? 1, pout = m.pout ?? 1, dt = m.dt ?? 9;
+  const eIn = EASE.out(pin), outA = EASE.easy(pout);
+  let off = (1 - a) * 50 * u * (right ? 1 : -1), alpha = a, scale = 1, rot = 0, blur = 0, reveal = 1, nChars = Infinity, words = false, circle = 0;
+  switch (anim) {
+    case 'pop': off = 0; scale = (0.55 + 0.45 * EASE.back(pin)) * (0.9 + 0.1 * pout); alpha = Math.min(clamp01(pin * 3), outA); break;
+    case 'mascara': off = 0; reveal = eIn; alpha = outA; break;
+    case 'desfoque': off = 0; blur = (1 - eIn) * 26 * u; scale = 1.08 - 0.08 * eIn; alpha = Math.min(clamp01(pin * 1.6), outA); break;
+    case 'digitar': off = (1 - EASE.out(clamp01(pin * 2.5))) * 30 * u * (right ? 1 : -1); alpha = Math.min(clamp01(pin * 3), outA); nChars = Math.floor(text.length * clamp01((dt - 0.15) / Math.max(0.45, text.length * 0.05))); break;
+    case 'palavras': off = 0; alpha = Math.min(clamp01(pin * 3), outA); words = true; break;
+    case 'circulo': circle = clamp01((dt - 0.45) / 0.65); break;
+    case 'queda': off = 0; rot = (1 - EASE.back(pin)) * (right ? 0.35 : -0.35); y -= (1 - EASE.out(pin)) * 70 * u; alpha = Math.min(clamp01(pin * 2.5), outA); break;
+  }
   const X = x + off;
   g.save();
-  g.globalAlpha = a;
+  g.globalAlpha = alpha;
+  if (scale !== 1 || rot) { const cx = X + w / 2, cy = y + h / 2; g.translate(cx, cy); g.rotate(rot); g.scale(scale, scale); g.translate(-cx, -cy); }
+  if (blur > 0.3) g.filter = `blur(${blur.toFixed(1)}px)`;
+  if (reveal < 1) { g.beginPath(); const rw = (w + 40 * u) * reveal; g.rect(right ? X + w + 20 * u - rw : X - 20 * u, y - eb - 20 * u, rw, h + eb + 60 * u); g.clip(); }
   if (eb) drawEyebrow(g, cs.eyebrow, right ? X + w : X, y - eb, st, u, right ? 'right' : 'left', cs.variant === 'dark');
   let fg = st.primary, subFg = '#5B6B6B';
   switch (cs.variant) {
@@ -583,8 +616,30 @@ function drawCard(g, k, a, side, W, H, u, st) {
   }
   setFont(g, st, cs, fs);
   g.fillStyle = fg; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-  g.fillText(text, X + padX, y + padY + fs * 0.92);
+  const ty = y + padY + fs * 0.92;
+  if (words) {
+    // palavra por palavra: cada palavra sobe e aparece 70 ms depois da anterior
+    let wx = X + padX; const sp = g.measureText(' ').width;
+    text.split(' ').forEach((wd, i) => {
+      const p = EASE.out(clamp01((dt - 0.1 - i * 0.07) / 0.35));
+      g.save(); g.globalAlpha = alpha * p; g.fillText(wd, wx, ty + (1 - p) * 26 * u); g.restore();
+      wx += g.measureText(wd).width + sp;
+    });
+  } else if (nChars < text.length) {
+    const part = text.slice(0, nChars);
+    g.fillText(part, X + padX, ty);
+    if (Math.floor(dt * 3) % 2 === 0) { const cw = g.measureText(part).width; g.fillRect(X + padX + cw + 3 * u, ty - fs * 0.78, 4 * u, fs * 0.9); }
+  } else g.fillText(text, X + padX, ty);
   noShadow(g); resetLS(g);
+  if (circle > 0) {
+    // círculo desenhado à mão em volta do destaque (traço que se completa)
+    g.save(); g.filter = 'none'; g.strokeStyle = st.accent; g.lineWidth = 6 * u; g.lineCap = 'round';
+    const cx = X + w / 2, cy = y + h / 2, rx = w * 0.62, ry = h * 0.82, len = Math.PI * 2 * 1.08;
+    g.beginPath();
+    const steps = 64, endA = -2.2 + len * EASE.easy(circle);
+    for (let i = 0; i <= steps; i++) { const t = -2.2 + ((endA + 2.2) * i) / steps, wob = 1 + 0.03 * Math.sin(t * 3); const px = cx + Math.cos(t) * rx * wob, py = cy + Math.sin(t) * ry * wob * (1 - 0.04 * (t + 2.2)); i ? g.lineTo(px, py) : g.moveTo(px, py); }
+    g.stroke(); g.restore();
+  }
   if (k.sub) {
     g.fillStyle = subFg; g.font = `400 ${28 * u}px ${FONTS.inter}`;
     g.fillText(k.sub, X + padX, y + padY + fs + 36 * u, w - padX * 2);
@@ -771,4 +826,10 @@ export async function loadLutText(id) {
   const b = await db.getBlob(id);
   if (!b) throw new Error('LUT não encontrado neste aparelho');
   return await b.text();
+}
+
+export async function loadLottieJSON(id) {
+  const b = await db.getBlob(id);
+  if (!b) throw new Error('Animação não encontrada neste aparelho');
+  return JSON.parse(await b.text());
 }

@@ -11,6 +11,7 @@ import { learnStyle } from './learn.js';
 import { GRADE_LOOKS, setLut, parseCube, gradingAvailable } from './grade.js';
 import { VOICE_PRESETS } from './audiopro.js';
 import { backupNow, startAutoBackup, onBackup, restoreBackup } from './backup.js';
+import { TRANSITIONS, CARD_ANIMS, ensureLottie, lottieDuration, recolorLottie, LOTTIE_POS } from './motion.js';
 import { storageInfo, copyProgress } from './db.js';
 import { SFX, playSfx } from './sfx.js';
 import { TRACKS, buildMusic } from './music.js';
@@ -1555,7 +1556,23 @@ async function viewEditor(course, lessonId) {
             <button class="mini-btn" data-del="${i}">×</button>
           </div>`;
         }).join('') || '<p class="muted">Nenhum cartão. Gere automaticamente ou use “+ Destaque” (K) no cursor.</p>'}
-      </div>`;
+      </div>
+      <h3>Animações Lottie (After Effects) <small class="muted">${(lesson.lotties || []).length}</small></h3>
+      <p class="hint">Importe animações feitas no After Effects e exportadas pelo plugin Bodymovin (.json), ou baixe prontas e grátis no LottieFiles (.json ou .lottie). Entram na agulha, tocam quadro a quadro e saem iguais no vídeo exportado.</p>
+      <div class="btn-row"><label class="btn file-btn">Importar animação<input type="file" id="lotIn" accept=".json,.lottie,application/json" hidden></label>
+        <label class="check"><input type="checkbox" id="lotBrand" checked> Usar as cores da marca</label></div>
+      <div class="cards-list">${(lesson.lotties || []).map((k, i) => {
+        const T = player.lottiesT?.find((x) => x.id === k.id)?.T;
+        return `<div class="kcard lot" data-li="${i}">
+          <button class="t" data-goto="${T ?? ''}">${T == null ? 'cortado' : fmt(T)}</button>
+          <span class="lot-name">${esc(k.name)}</span>
+          <select data-lf="pos">${Object.entries(LOTTIE_POS).map(([v, l]) => `<option value="${v}" ${k.pos === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          <label class="dur">tam. <input data-lf="scale" type="number" step="0.1" min="0.3" max="2.5" value="${k.scale ?? 1}"></label>
+          <label class="dur">dur. <input data-lf="dur" type="number" step="0.5" min="0.5" max="60" value="${(+k.dur).toFixed(1)}"></label>
+          <label class="check"><input type="checkbox" data-lf="loop" ${k.loop ? 'checked' : ''}> repetir</label>
+          <button class="mini-btn" data-ldel="${i}" aria-label="Remover animação">×</button>
+        </div>`;
+      }).join('')}</div>`;
     chipEditor($('#kwChips'), $('#kwForm'), client, () => player.draw());
     body.querySelectorAll('[data-sug]').forEach((b) => (b.onclick = () => { client.keywords.push(b.dataset.sug); save(); player.draw(); renderTab(); }));
     $('#genCards').onclick = () => {
@@ -1566,7 +1583,40 @@ async function viewEditor(course, lessonId) {
       ed.changed(); renderTab(); toast(`${lesson.cards.length} destaques criados`, 'ok');
     };
     $('#clearCards').onclick = () => { ed.snapshot(); lesson.cards = []; ed.changed(); renderTab(); };
-    body.querySelectorAll('.kcard').forEach((row) => {
+    $('#lotIn').onchange = async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      try {
+        let data;
+        if (/\.lottie$/i.test(f.name)) {
+          await needZip();
+          const z = await JSZip.loadAsync(f);
+          const entry = Object.values(z.files).find((x) => /animations\/.+\.json$/i.test(x.name)) || Object.values(z.files).find((x) => /\.json$/i.test(x.name) && !/manifest/i.test(x.name));
+          if (!entry) throw new Error('Não achei a animação dentro do arquivo .lottie.');
+          data = JSON.parse(await entry.async('string'));
+        } else data = JSON.parse(await f.text());
+        if (!data || !Array.isArray(data.layers) || !data.fr) throw new Error('Este arquivo não é uma animação Lottie (After Effects/Bodymovin).');
+        if ($('#lotBrand').checked) data = recolorLottie(data, client.palette?.length ? client.palette : [client.accent, client.primary]);
+        const mediaId = uid('lot');
+        await db.putMedia(mediaId, new Blob([JSON.stringify(data)], { type: 'application/json' }));
+        window.dispatchEvent(new Event('ec-media-added'));
+        const at = lesson.clips.length ? player.clipAt(player.T) : -1;
+        if (at < 0) throw new Error('Importe o vídeo da aula antes.');
+        const c = lesson.clips[at], local = c.in + (player.T - player.starts[at]);
+        ed.snapshot();
+        lesson.lotties = [...(lesson.lotties || []), { id: uid('lt'), mediaId, name: f.name.replace(/\.(json|lottie)$/i, ''), srcId: c.srcId, t: local, dur: Math.min(30, lottieDuration(data)), pos: data.w / data.h > 1.5 ? 'tela' : 'lado', scale: 1, loop: false }];
+        await ensureLottie(mediaId, async () => data);
+        ed.changed(); renderTab();
+        toast(`Animação “${f.name}” adicionada na agulha (${fmtLong(lottieDuration(data))})`, 'ok');
+      } catch (err) { toast(err.message || 'Não consegui ler esta animação.', 'err'); }
+    };
+    body.querySelectorAll('.kcard.lot').forEach((row) => {
+      const k = lesson.lotties[+row.dataset.li];
+      row.querySelectorAll('[data-lf]').forEach((inp) => (inp.onchange = () => { k[inp.dataset.lf] = inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? +inp.value : inp.value; ed.changed(); }));
+      row.querySelector('[data-goto]').onclick = (e) => e.target.dataset.goto !== '' && player.seek(+e.target.dataset.goto + 0.2);
+      row.querySelector('[data-ldel]').onclick = () => { ed.snapshot(); lesson.lotties.splice(+row.dataset.li, 1); ed.changed(); renderTab(); };
+    });
+    body.querySelectorAll('.kcard:not(.lot)').forEach((row) => {
       const k = lesson.cards[+row.dataset.i];
       row.querySelectorAll('[data-f]').forEach((inp) => (inp.oninput = () => { k[inp.dataset.f] = inp.type === 'number' ? +inp.value : inp.value; k.manual = true; ed.changed(); }));
       row.querySelector('[data-goto]').onclick = (e) => e.target.dataset.goto !== '' && player.seek(+e.target.dataset.goto + 0.4);
@@ -1712,6 +1762,11 @@ function stylePanelHTML(c) {
       ${select('cardVariant', 'Modelo de destaque', c.cardVariant || 'auto', CARD_VARIANTS)}
       <label>Etiqueta acima do destaque<input data-k="cardEyebrow" value="${esc(c.cardEyebrow ?? st.card.eyebrow ?? '')}" placeholder="Ex.: PONTO-CHAVE (vazio = sem etiqueta)"></label>
       ${select('expertSide', 'Posição do expert', c.expertSide, { left: 'Expert à esquerda → destaques à direita', right: 'Expert à direita → destaques à esquerda' })}`)}
+    ${grp('mov', 'Movimento (estilo After Effects)', `${esc(CARD_ANIMS[c.cardAnim || 'deslizar'])} · ${esc(TRANSITIONS[c.transition || 'corte'].split(' (')[0])}`, `
+      <p class="hint">Animações com curvas de velocidade do After Effects (Easy Ease, overshoot, elástico), desenhadas quadro a quadro: o vídeo exportado em 4K sai igual à prévia. Para animações feitas no After Effects, use a aba Destaques → Animações Lottie.</p>
+      ${select('cardAnim', 'Entrada dos destaques', c.cardAnim || 'deslizar', CARD_ANIMS)}
+      ${select('transition', 'Transição entre os takes', c.transition || 'corte', TRANSITIONS)}
+      <div class="btn-row"><button type="button" class="ghost small" id="movPlay">▶ Ver animação na prévia</button></div>`)}
     ${grp('cor', 'Color grading (cor de cinema)', c.grade?.look ? esc(GRADE_LOOKS[c.grade.look]?.name || '') + (c.grade.lutId ? ' + LUT' : '') : c.grade?.lutId ? 'LUT próprio' : 'desligado', gradeHTML(c))}
     ${grp('imagem', 'Imagem e elementos', 'zoom, abertura, nome + CRM, logo', `
       ${select('look', 'Cor da imagem', c.look || 'auto', { auto: 'Do modelo', ...Object.fromEntries(Object.entries(LOOKS).map(([k, v]) => [k, v.name])) })}
@@ -1837,6 +1892,18 @@ function bindStylePanel(root, c, player, onChange) {
   }));
   bindForm(root, c, (k) => { if (k === 'cleanVoice' || k === 'voicePreset') { if (k === 'voicePreset') c.cleanVoice = c.voicePreset !== 'nenhum'; player?.refreshAudio(); } if (k === 'cardEyebrow') c.cardEyebrow = root.querySelector('[data-k=cardEyebrow]').value; changed(); });
   bindSfxPreview(root, c, player);
+  const mp = root.querySelector('#movPlay');
+  if (mp) mp.onclick = () => {
+    const big = root.querySelector('[data-prev]'); if (!big) return;
+    const t0 = performance.now();
+    const step = () => {
+      const s = (performance.now() - t0) / 1000;
+      if (s > 2.6) { drawStylePreview(big, c); return; }
+      drawStylePreview(big, c, {}, { T: 4.55 + s * 0.25, cardDt: s, cut: true });
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
   bindGrade(root, c, () => { player?.draw(); changed(); }, () => { const y = root.closest('.tab-body, main')?.scrollTop; root.innerHTML = stylePanelHTML(c); bindStylePanel(root, c, player, onChange); });
   bindMusic(root.querySelector('[data-music-box]'), c, onChange);
   drawThumbs(root, c);
@@ -2091,6 +2158,7 @@ async function syncMedia() {
   try {
     const ids = new Set();
     for (const c of state.clients) { if (c.logoMediaId) ids.add(c.logoMediaId); for (const l of c.luts || []) ids.add(l.id); }
+    for (const k of state.courses) for (const m of k.modules) for (const l of m.lessons) for (const a of l.lotties || []) ids.add(a.mediaId);
     // vídeos ficam no aparelho (preferência da Rebeca): a nuvem guarda os projetos, logos e LUTs
     for (const id of ids) {
       if (state.media[id]) continue;
