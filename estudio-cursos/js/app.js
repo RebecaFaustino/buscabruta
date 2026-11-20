@@ -6,6 +6,8 @@ import { analyze, speechRanges, decodePCM16k } from './audio.js';
 import { phrases, spread, parseSubs, srt, vtt, timelineCaptions, suggestKeywords, autoCards, norm } from './captions.js';
 import { Player, drawStylePreview } from './player.js';
 import { createTimeline } from './timeline.js';
+import { FONT_LIST, ensureFont, fontStack, fontName } from './fonts.js';
+import { learnStyle } from './learn.js';
 import { SFX, playSfx } from './sfx.js';
 import { TRACKS, buildMusic } from './music.js';
 import { drawCover } from './cover.js';
@@ -691,6 +693,97 @@ Responda só com JSON: [{"frase": índice, "titulo": "..."}]`, { modelTier: 'qui
   return out.join('\n');
 }
 
+// ---- Kit de marca: paleta completa, fontes e aprendizado com vídeos de exemplo ----
+function brandKitHTML(c) {
+  const pal = c.palette || [];
+  const fontSel = (k, label) => {
+    const v = c[k] || '';
+    const opts = [...new Set([...(v && !FONT_LIST.includes(v) ? [v] : []), ...FONT_LIST])];
+    return `<label>${label}<select data-bk="${k}"><option value="">Do modelo de vídeo</option>${opts.map((f) => `<option value="${esc(f)}" ${f === v ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select>
+      <span class="font-prev" data-fp="${k}" style="font-family:${v ? esc(fontStack(v)) : 'inherit'}">${k === 'fontTitle' ? 'Título da aula' : 'Legenda da aula em português'}</span></label>`;
+  };
+  return `<div class="brandkit">
+    <p class="side-label">Paleta da marca</p>
+    <div class="bk-pal">${pal.length ? pal.map((h) => `<button type="button" class="bk-sw" data-sw="${esc(h)}" style="--c:${esc(h)}" title="${esc(h)}" aria-label="Usar ${esc(h)}"></button>`).join('') : '<span class="muted small">Sem paleta ainda. Ela vem do Estúdio de Marketing ou dos vídeos de exemplo.</span>'}</div>
+    ${pal.length ? '<div class="seg-mini" role="group" aria-label="Aplicar a cor tocada em"><button type="button" class="on" data-to="accent">Tocar = destaque</button><button type="button" data-to="primary">Tocar = principal</button></div>' : ''}
+    <div class="row2">${fontSel('fontTitle', 'Fonte dos títulos')}${fontSel('fontBody', 'Fonte da legenda')}</div>
+    <div class="learn" id="learnBox">
+      <p class="side-label">Aprender o estilo com vídeos de exemplo</p>
+      <p class="hint">Envie 2 ou 3 vídeos já editados deste cliente (Reels, aulas antigas). O app olha as cores, o ritmo dos cortes, a legenda e os destaques e sugere o estilo. Nada muda até você tocar em Aplicar.</p>
+      <label class="ghost file-btn">Escolher vídeos de exemplo<input type="file" id="learnIn" accept="video/*" multiple hidden></label>
+      <div class="progress" id="learnProg" hidden><span></span><em></em></div>
+      <div id="learnOut"></div>
+    </div>
+  </div>`;
+}
+
+function bindBrandKit(c, refresh) {
+  const box = view.querySelector('.brandkit'); if (!box) return;
+  let to = 'accent';
+  box.querySelectorAll('[data-to]').forEach((b) => (b.onclick = () => { to = b.dataset.to; box.querySelectorAll('[data-to]').forEach((x) => x.classList.toggle('on', x === b)); }));
+  box.querySelectorAll('[data-sw]').forEach((b) => (b.onclick = () => {
+    c[to] = b.dataset.sw;
+    if (to === 'primary') { const n = parseInt(c.primary.slice(1), 16), L = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; c.text = L > 0.6 ? '#1f1530' : '#ffffff'; }
+    save(); refresh(); toast(`${to === 'accent' ? 'Cor de destaque' : 'Cor principal'}: ${b.dataset.sw}`, 'ok');
+  }));
+  box.querySelectorAll('[data-bk]').forEach((sel) => (sel.onchange = async () => {
+    const k = sel.dataset.bk;
+    c[k] = sel.value ? fontName(sel.value) : '';
+    save();
+    const fp = box.querySelector(`[data-fp="${k}"]`);
+    await ensureFont(c[k]);
+    fp.style.fontFamily = c[k] ? fontStack(c[k]) : 'inherit';
+    refresh();
+  }));
+  [c.fontTitle, c.fontBody].forEach((f) => f && ensureFont(f));
+  $('#learnIn').onchange = async (e) => {
+    const files = [...e.target.files].slice(0, 3);
+    e.target.value = '';
+    if (!files.length) return;
+    const prog = $('#learnProg'), bar = prog.querySelector('span'), lbl = prog.querySelector('em'), out = $('#learnOut');
+    prog.hidden = false; out.innerHTML = '';
+    try {
+      const r = await learnStyle(files, c, await cap('sample'), (f, t) => { bar.style.width = Math.round(f * 100) + '%'; lbl.textContent = t; });
+      prog.hidden = true;
+      out.innerHTML = learnResultHTML(r);
+      $('#learnApply').onclick = () => {
+        const before = JSON.stringify(c);
+        Object.assign(c, r.patch);
+        if (r.palette?.length) c.palette = [...new Set([...(r.palette || []), ...(c.palette || [])])].slice(0, 8);
+        save();
+        Promise.all([ensureFont(c.fontTitle), ensureFont(c.fontBody)]).then(() => route());
+        toast('Estilo aplicado ao perfil. Para voltar, toque em Desfazer.', 'ok');
+        setTimeout(() => {
+          const b = document.createElement('button'); b.className = 'ghost small'; b.textContent = 'Desfazer estilo aprendido';
+          b.onclick = () => { Object.assign(c, JSON.parse(before)); save(); route(); };
+          $('#learnOut')?.appendChild(b);
+        }, 300);
+      };
+    } catch (err) { prog.hidden = true; console.error(err); out.innerHTML = `<p class="banner warn-banner">${esc(err.message || 'Não consegui analisar esses vídeos.')}</p>`; }
+  };
+}
+
+function learnResultHTML(r) {
+  const sw = (h) => `<i class="bk-sw static" style="--c:${esc(h)}" title="${esc(h)}"></i>`;
+  const p = r.patch;
+  const tpl = TEMPLATES[p.template]?.name;
+  const rows = [
+    ['Cores', (r.palette || []).length ? r.palette.map(sw).join('') : '—'],
+    ['Principal / destaque', `${p.primary ? sw(p.primary) : '—'} ${p.accent ? sw(p.accent) : ''}`],
+    ['Modelo de vídeo', tpl || '—'],
+    ['Legenda', [CAPTION_MODES[p.captionStyle], p.captionPos === 'middle' ? 'no meio' : p.captionPos === 'bottom' ? 'no rodapé' : ''].filter(Boolean).join(' · ') || '—'],
+    ['Fontes', [p.fontTitle, p.fontBody].filter(Boolean).join(' + ') || 'do modelo'],
+    ['Ritmo', r.stats ? `${pl(Math.round(r.stats.cutsPerMin), 'corte', 'cortes')} por minuto · ${r.stats.speechPct}% de fala` : '—'],
+    ['Zoom entre cortes', p.autoZoom === false ? 'não' : 'sim'],
+  ];
+  return `<div class="learn-res">
+    <p><b>Estilo encontrado</b>${r.ai ? ' <span class="tag ok">com IA</span>' : ' <span class="tag">análise do aparelho</span>'}</p>
+    <dl class="mkt-list">${rows.map(([k, v]) => `<div class="mkt-row"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>
+    ${r.notes ? `<p class="hint">${esc(r.notes)}</p>` : ''}
+    <div class="btn-row"><button class="btn" id="learnApply" type="button">Aplicar ao perfil</button></div>
+  </div>`;
+}
+
 // ---- Estúdio de Marketing (Notion ao vivo) ----
 function mktPanel(c) {
   const m = c.mkt;
@@ -709,7 +802,9 @@ function bindMktPanel(c) {
   const off = onMkt((s) => { if (!document.body.contains(pill)) return off(); pill.textContent = s.text; pill.dataset.mktState = s.state; });
   $('#mktNow', box).onclick = () => refreshMarketing(onMktChange);
 }
-function onMktChange(list) {
+function onMktChange(list, opts = {}) {
+  if (opts.quiet || !list.length) { try { editor?.player?.draw(); } catch {} if (cur === '#/') route(); return; }
+  if (opts.logo) { toast(`Logo de ${list[0].client.name} carregado do Drive`, 'ok'); if (cur === '#/' || cur.startsWith('#/cliente/')) route(); return; }
   const names = list.map((x) => x.client.name);
   const nNew = list.filter((x) => x.isNew).length;
   toast(list.length === 1 ? (nNew ? `Novo cliente do Estúdio de Marketing: ${names[0]}` : `Perfil de ${names[0]} atualizado do Estúdio de Marketing`) : `Estúdio de Marketing: ${nNew ? pl(nNew, 'cliente novo', 'clientes novos') : pl(list.length, 'perfil atualizado', 'perfis atualizados')}`, 'ok');
@@ -738,12 +833,13 @@ function viewClient(c) {
             ${color('accent', 'Cor de destaque', c.accent)}
             ${color('text', 'Texto sobre a cor', c.text)}
           </div>
-          <label>Logo / assinatura
+          <div class="fake-label">Logo / assinatura
             <div class="logo-row">
               <span class="logo-prev" id="logoPrev"></span>
-              <input type="file" accept="image/*" id="logoInput">
+              <label class="ghost file-btn">Enviar logo<input type="file" accept="image/*" id="logoInput" hidden></label>
             </div>
-          </label>
+          </div>
+          ${brandKitHTML(c)}
         </div>
         <h2>Palavras-chave do expert</h2>
         <p class="hint">Aparecem destacadas na legenda e em cartões animados ao lado do expert.</p>
@@ -790,6 +886,7 @@ function viewClient(c) {
   chipEditor($('#kwChips'), $('#kwForm'), c);
   $('#newCourse').onclick = () => { const k = newCourse(c.id); state.courses.push(k); save(); go('#/curso/' + k.id); };
   bindMktPanel(c);
+  bindBrandKit(c, () => { cStyle.innerHTML = stylePanelHTML(c); bindStylePanel(cStyle, c, null, () => renderSidebar()); renderSidebar(); view.querySelectorAll('.two-col input[type=color][data-k]').forEach((el) => (el.value = c[el.dataset.k])); });
   $('#delClient').onclick = async () => {
     if (!(await ask(`Excluir ${c.name} e todos os seus cursos?`))) return;
     state.courses = state.courses.filter((k) => k.clientId !== c.id);
@@ -1586,6 +1683,11 @@ function stylePanelHTML(c) {
         ${check('watermark', 'Logo no canto', c.watermark)}
       </div>`)}
     ${grp('sons', 'Efeitos sonoros', c.sfx ? 'ligados' : 'desligados', sfxBlock(c).replace('<h3>Efeitos sonoros</h3>', ''))}
+    ${grp('audio', 'Áudio da exportação', [c.jcut !== false && 'corte em J', c.levelTakes !== false && 'takes nivelados', c.loudnorm !== false && '−14 LUFS'].filter(Boolean).join(' · ') || 'padrão', `
+      ${check('jcut', 'Corte em J: a voz do próximo take entra 0,15 s antes da imagem (cortes sem “buraco”)', c.jcut !== false)}
+      ${check('levelTakes', 'Nivelar o volume entre takes (no máximo ±6 dB)', c.levelTakes !== false)}
+      ${check('loudnorm', 'Volume padrão das plataformas (≈ −14 LUFS, picos em −1 dB)', c.loudnorm !== false)}
+      <p class="hint">Valem para o vídeo exportado. Ficam ligados por padrão, como no Edvid.</p>`)}
     ${grp('trilha', 'Trilha sonora', esc(TRACKS[c.music || 'nenhuma']?.name || ''), `<div data-music-box>${musicBlock(c)}</div>`)}`;
 }
 

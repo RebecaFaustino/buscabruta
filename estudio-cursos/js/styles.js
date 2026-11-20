@@ -120,6 +120,9 @@ export function resolveStyle(cl = {}) {
   const card = { ...t.card };
   if (cl.cardVariant && cl.cardVariant !== 'auto') card.variant = cl.cardVariant;
   if (cl.cardEyebrow !== undefined && cl.cardEyebrow !== null) card.eyebrow = cl.cardEyebrow;
+  // fontes da marca do cliente (substituem as do modelo)
+  if (cl.fontTitle) card.font = 'x:' + cl.fontTitle;
+  if (cl.fontBody) cap.font = 'x:' + cl.fontBody;
   return {
     ...t, caption: cap, card,
     primary: cl.primary || t.palette.primary, accent: cl.accent || t.palette.accent, text: cl.text || t.palette.text,

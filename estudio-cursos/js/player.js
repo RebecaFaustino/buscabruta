@@ -1,4 +1,5 @@
 // Motor de reprodução da linha do tempo editada + composição (zoom, look, legendas, palavras-chave).
+import { fontStack, ensureFont } from './fonts.js';
 import { db } from './db.js';
 import { LOOKS } from './presets.js';
 import { timelineCaptions, srcToTimeline, isKeyword } from './captions.js';
@@ -67,6 +68,7 @@ export class Player {
     this.client = client;
     if (this.host && lesson.sources.some((s) => !this.videos.has(s.id))) this.host.classList.add('loading');
     try { await this.loadSources(lesson); } finally { this.host?.classList.remove('loading'); }
+    await Promise.all([ensureFont(client.fontTitle), ensureFont(client.fontBody)]).catch(() => {});
     this.logo = null;
     if (client.logoMediaId) {
       const img = new Image();
@@ -425,10 +427,11 @@ function lookFilter(cl, st) {
 
 const hasLS = typeof CanvasRenderingContext2D !== 'undefined' && 'letterSpacing' in CanvasRenderingContext2D.prototype;
 function setFont(g, st, part, size, weight) {
-  const f = FONTS[part.font] || FONTS.inter;
+  const f = String(part.font || '').startsWith('x:') ? fontStack(part.font.slice(2)) : (FONTS[part.font] || FONTS.inter);
   g.font = `${weight ?? part.weight ?? 600} ${Math.round(size)}px ${f}`;
   if (hasLS) g.letterSpacing = `${((part.tracking || 0) * size).toFixed(1)}px`;
 }
+function fam(k, fb = FONTS.inter) { return String(k || '').startsWith('x:') ? fontStack(k.slice(2)) : (FONTS[k] || fb); }
 function resetLS(g) { if (hasLS) g.letterSpacing = '0px'; }
 
 function fitText(g, text, maxW, weight, size, family = FONTS.inter) {
@@ -581,7 +584,7 @@ function drawLower(g, a, cl, st, W, H, u) {
   const nameSize = 44 * u, subSize = 26 * u;
   g.save();
   g.globalAlpha = a;
-  const nameFont = st.lower === 'line' ? `300 ${nameSize * 1.05}px ${FONTS[st.card.font] || FONTS.inter}` : `700 ${nameSize}px ${FONTS.tight}`;
+  const nameFont = st.lower === 'line' ? `300 ${nameSize * 1.05}px ${fam(st.card.font, FONTS.inter)}` : `700 ${nameSize}px ${st.card.font?.startsWith?.('x:') ? fam(st.card.font) : FONTS.tight}`;
   g.font = nameFont;
   const w1 = g.measureText(cl.name || '').width;
   g.font = `500 ${subSize}px ${st.lower === 'dark' ? FONTS.mono : FONTS.inter}`;
@@ -640,8 +643,8 @@ function drawOpening(g, a, T, title, module, cl, st, W, H, u) {
     g.font = `300 ${22 * u}px ${FONTS.inter}`;
     if (hasLS) g.letterSpacing = `${8 * u}px`;
     g.fillStyle = hexA(fg, 0.7); g.fillText(module.toUpperCase(), W / 2, H / 2 - 70 * u + rise);
-    const s = fitText(g, title.toUpperCase(), W * 0.8, 300, 64 * u, FONTS[st.card.font] || FONTS.tight);
-    g.font = `300 ${s}px ${FONTS[st.card.font] || FONTS.tight}`;
+    const s = fitText(g, title.toUpperCase(), W * 0.8, 300, 64 * u, fam(st.card.font, FONTS.tight));
+    g.font = `300 ${s}px ${fam(st.card.font, FONTS.tight)}`;
     if (hasLS) g.letterSpacing = `${0.22 * s}px`;
     g.fillStyle = fg; g.fillText(title.toUpperCase(), W / 2, H / 2 + rise);
     if (hasLS) g.letterSpacing = `${6 * u}px`;
@@ -664,10 +667,10 @@ function drawOpening(g, a, T, title, module, cl, st, W, H, u) {
       g.fillText(module.toUpperCase(), W / 2, H / 2 - 52 * u + rise);
       resetLS(g);
     }
-    const fam = kind === 'editorial' ? FONTS.tight : FONTS[st.card.font] || FONTS.tight;
+    const tf = kind === 'editorial' && !String(st.card.font).startsWith('x:') ? FONTS.tight : fam(st.card.font, FONTS.tight);
     const wt = kind === 'editorial' ? 800 : 700;
-    const s = fitText(g, title, W * 0.82, wt, (kind === 'editorial' ? 84 : 70) * u, fam);
-    g.font = `${wt} ${s}px ${fam}`;
+    const s = fitText(g, title, W * 0.82, wt, (kind === 'editorial' ? 84 : 70) * u, tf);
+    g.font = `${wt} ${s}px ${tf}`;
     if (hasLS && kind === 'editorial') g.letterSpacing = `${-0.03 * s}px`;
     g.fillStyle = fg; g.fillText(title, W / 2, H / 2 + 14 * u + rise);
     resetLS(g);

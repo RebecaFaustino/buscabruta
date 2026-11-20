@@ -9,6 +9,7 @@ import { db } from './db.js';
 import { voiceChain } from './player.js';
 import { SFX } from './sfx.js';
 import { buildMusic, scheduleMusic } from './music.js';
+import { envs } from './pipeline.js';
 
 export async function offlineCodecs(preset) {
   if (typeof VideoEncoder === 'undefined' || typeof AudioEncoder === 'undefined' || typeof OfflineAudioContext === 'undefined') return null;
@@ -38,23 +39,31 @@ async function renderAudio(player, srcs, total, onProgress, signal) {
   const cl = player.client;
   const into = cl.cleanVoice ? voiceChain(ctx, master) : master;
   const clips = player.lesson.clips;
+  const gains = takeGains(clips, cl);
   for (let i = 0; i < clips.length; i++) {
     if (signal?.aborted) throw new DOMException('Cancelado', 'AbortError');
-    const c = clips[i], at = player.starts[i], d = c.out - c.in;
+    const c = clips[i], at0 = player.starts[i], d0 = c.out - c.in;
     const tr = srcs.get(c.srcId)?.audio;
     if (!tr || !(await tr.canDecode())) continue;
+    // Corte em J (como no Edvid): a voz do take seguinte entra um pouco antes da imagem (até 150 ms),
+    // somada ao fim do take anterior. A imagem não muda; só o som fica contínuo, sem "buraco" no corte.
+    const prev = clips[i - 1];
+    const lead = cl.jcut !== false && i > 0 ? Math.min(0.15, c.in, 0.45 * (prev.out - prev.in), 0.45 * d0) : 0;
+    const L = lead >= 0.03 ? lead : 0;
+    const at = at0 - L, a = c.in - L, d = d0 + L;
+    const k = gains[i];
     const g = ctx.createGain();
     g.gain.setValueAtTime(0, at);
-    g.gain.linearRampToValueAtTime(1, at + 0.012);
-    g.gain.setValueAtTime(1, Math.max(at + 0.012, at + d - 0.015));
+    g.gain.linearRampToValueAtTime(k, at + Math.max(0.012, L));
+    g.gain.setValueAtTime(k, Math.max(at + Math.max(0.012, L), at + d - 0.015));
     g.gain.linearRampToValueAtTime(0, at + d);
     g.connect(into);
-    for await (const { buffer, timestamp } of new AudioBufferSink(tr).buffers(c.in, c.out)) {
+    for await (const { buffer, timestamp } of new AudioBufferSink(tr).buffers(a, c.out)) {
       const node = ctx.createBufferSource();
       node.buffer = buffer;
       node.connect(g);
-      const off = Math.max(0, c.in - timestamp);
-      const when = at + Math.max(0, timestamp - c.in);
+      const off = Math.max(0, a - timestamp);
+      const when = at + Math.max(0, timestamp - a);
       const dur = Math.min(buffer.duration - off, at + d - when);
       if (dur > 0) node.start(when, off, dur);
     }
@@ -76,7 +85,47 @@ async function renderAudio(player, srcs, total, onProgress, signal) {
     if (cl.lowerThird) fx('tique', 3.4, vol * 0.7);
     for (const k of player.cardsT || []) { fx('whoosh', k.T, vol); fx('pop', k.T + 0.18, vol * 0.6); }
   }
-  return ctx.startRendering();
+  const out = await ctx.startRendering();
+  if (cl.loudnorm !== false) normalizeLoudness(out);
+  return out;
+}
+
+// Nivela o volume entre takes: cada clipe vai para perto da mediana de fala (no máximo ±6 dB).
+function takeGains(clips, cl) {
+  const lv = clips.map((c) => {
+    const env = envs.get(c.srcId);
+    if (!env) return null;
+    let s = 0, n = 0;
+    for (let k = Math.floor(c.in * 100); k < Math.min(env.length, Math.ceil(c.out * 100)); k++) if (env[k] > 0.01) { s += env[k] * env[k]; n++; }
+    return n > 20 ? Math.sqrt(s / n) : null;
+  });
+  if (cl.levelTakes === false) return clips.map(() => 1);
+  const ok = lv.filter((x) => x).sort((x, y) => x - y);
+  if (ok.length < 2) return clips.map(() => 1);
+  const med = ok[Math.floor(ok.length / 2)];
+  return lv.map((x) => (x ? Math.max(0.5, Math.min(2, med / x)) : 1));
+}
+
+// Volume padrão de plataformas (~−14 LUFS): mede a fala (blocos acima de −50 dB), ajusta o ganho
+// e segura os picos em −1 dB com um limitador suave.
+function normalizeLoudness(buf) {
+  const chs = [...Array(buf.numberOfChannels)].map((_, c) => buf.getChannelData(c));
+  const blk = Math.round(buf.sampleRate * 0.4);
+  let sum = 0, cnt = 0;
+  for (let i = 0; i + blk <= chs[0].length; i += blk) {
+    let s = 0;
+    for (const d of chs) for (let j = i; j < i + blk; j++) s += d[j] * d[j];
+    const ms = s / (blk * chs.length);
+    if (ms > 1e-5) { sum += ms; cnt++; }
+  }
+  if (!cnt) return;
+  const rms = Math.sqrt(sum / cnt);
+  const g = Math.min(4, 0.13 / rms); // medido: ≈ −14 LUFS na fala
+  const knee = 0.7, room = 0.89 - knee;
+  for (const d of chs) for (let j = 0; j < d.length; j++) {
+    const y = d[j] * g, a = Math.abs(y);
+    d[j] = a <= knee ? y : Math.sign(y) * (knee + room * Math.tanh((a - knee) / room));
+  }
 }
 
 export async function renderOffline(player, preset, codecs, { onProgress, signal } = {}) {

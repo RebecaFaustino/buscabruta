@@ -3,6 +3,8 @@
 // no perfil de cada cliente. Atualiza sozinho enquanto o app está aberto.
 import { state, save, newClient } from './state.js';
 import { TEMPLATES } from './styles.js';
+import { fontName, ensureFont } from './fonts.js';
+import { db } from './db.js';
 
 export const MKT_SOURCE = 'collection://41a6c06c-d7f3-81e9-aab7-000bfbca9205';
 export const MKT_URL = 'https://app.notion.com/p/41a6c06cd7f381ba9470fd0dfd1ecc6d';
@@ -53,6 +55,13 @@ export function applyRow(c, r) {
   if (MUSIC.includes(mu)) c.music = mu;
   const side = fold(r['Lado do expert']);
   if (side === 'esquerda') c.expertSide = 'left'; else if (side === 'direita') c.expertSide = 'right';
+  const ft = fontName(r['Fonte dos títulos']), fb = fontName(r['Fonte do texto']);
+  if (ft) c.fontTitle = ft;
+  if (fb) c.fontBody = fb;
+  const pal = txt(r['Paleta completa']).split(/[,;\s]+/).map(hex).filter(Boolean);
+  if (pal.length) c.palette = [...new Set(pal)].slice(0, 8);
+  const logo = txt(r['Logo (link)']);
+  if (logo && logo !== c.logoFrom) c.logoPending = logo;
   c.mkt = {
     tom: txt(r['Tom de voz']), publico: txt(r['Público']), proibidas: txt(r['Palavras proibidas']), notas: txt(r['Particularidades']),
     instagram: txt(r['Instagram']), url: txt(r.url), at: txt(r['Atualizado em']),
@@ -87,6 +96,11 @@ function merge(rows, onChange) {
     if (demo && !used) { state.clients = state.clients.filter((c) => c !== demo); state.courses = state.courses.filter((k) => k.clientId !== demo.id); }
   }
   if (changed.length) { save(); onChange?.(changed); }
+  // fontes e logos chegam depois (rede): avisa de novo quando estiverem prontos
+  for (const { client: c } of changed) {
+    Promise.all([ensureFont(c.fontTitle), ensureFont(c.fontBody)]).then(() => onChange?.([], { quiet: true }));
+    if (c.logoPending) fetchLogo(c).then((ok) => ok && onChange?.([{ client: c, isNew: false }], { logo: true }));
+  }
   return changed;
 }
 
@@ -144,4 +158,47 @@ export function forbiddenIn(c, text) {
   const list = String(c?.mkt?.proibidas || '').split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
   const t = ' ' + fold(text) + ' ';
   return list.filter((w) => { const f = fold(w); return f && t.includes(' ' + f + ' '); });
+}
+
+// Logo da marca: link do Google Drive (lido pelo conector do Drive) ou link direto de imagem.
+// Guarda uma cópia reduzida (até 900 px) no aparelho/nuvem, como se tivesse sido enviada à mão.
+async function fetchLogo(c) {
+  const link = c.logoPending;
+  try {
+    let blob = null;
+    const id = (link.match(/\/d\/([\w-]{20,})/) || link.match(/[?&]id=([\w-]{20,})/) || [])[1];
+    if (id) {
+      const mcp = await (window.claude?.use ? window.claude.use('mcp').catch(() => null) : null);
+      if (!mcp) return false;
+      const r = await mcp.callTool('Google Drive', 'download_file_content', { fileId: id });
+      const img = (r.content || []).find((b) => b.type === 'image' && b.data);
+      const p = r.payload && typeof r.payload === 'object' ? r.payload : {};
+      const b64 = img?.data || p.content || p.base64Content || p.data || p.contentBase64 || (typeof r.payload === 'string' ? r.payload : null);
+      const type = img?.mimeType || p.mimeType || 'image/png';
+      if (typeof b64 !== 'string' || b64.length < 100) return false;
+      const bin = Uint8Array.from(atob(b64.replace(/\s+/g, '')), (ch) => ch.charCodeAt(0));
+      blob = new Blob([bin], { type });
+    } else {
+      const res = await fetch(link);
+      if (!res.ok) return false;
+      blob = await res.blob();
+    }
+    blob = await shrink(blob, 900);
+    const mid = 'logo_' + Math.random().toString(36).slice(2, 10);
+    await db.putMedia(mid, blob);
+    c.logoMediaId = mid; c.logoFrom = link; delete c.logoPending;
+    save();
+    window.dispatchEvent(new Event('ec-media-added'));
+    return true;
+  } catch (e) { console.warn('logo da marca', e); return false; }
+}
+
+async function shrink(blob, max) {
+  const bmp = await createImageBitmap(blob).catch(() => null);
+  if (!bmp) return blob;
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+  cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+  return await new Promise((res) => cv.toBlob((b) => res(b || blob), 'image/png'));
 }
